@@ -9,8 +9,12 @@ An entity that coordinates model turns and tool execution for one run.
 _Avoid_: Assistant, model
 
 **Agent run**:
-One request handled by an Agent, from its input messages through a final response or failure.
+One request handled by an Agent, from its input messages through completion, a stopped state, or failure.
 _Avoid_: Session
+
+**Agent stop reason**:
+The run-level outcome that explains whether an Agent completed, stopped, or failed, independent of how its last Model turn ended.
+_Avoid_: Finish reason
 
 **Model turn**:
 One request to a language model and its response within an Agent run.

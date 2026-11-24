@@ -37,6 +37,8 @@ for await (const event of agent.stream({
 
 `annotations` 描述工具的 `readOnly`、`destructive` 和 `idempotent` 属性；这些是运行时策略信息，不会发送给模型。默认情况下，`destructive` 工具需要审批。`requiresApproval` 可以针对单个工具显式覆盖默认审批策略。宿主通过 `tool.approval.requested` 和 `tool.approval.resolved` 事件获知审批状态；审批事件和回调会提供原始工具调用与校验后的执行参数。注解是工具定义者的声明；接入远程工具时，宿主应先验证其策略元数据，不要直接信任远程注解。
 
+Agent run 的终态由 `stopReason` 描述：`agent.completed` 表示正常完成或模型拒答，`agent.stopped` 表示达到轮数上限、取消或输出截断，`agent.failed` 表示运行错误。模型的 `finishReason` 只说明最后一次模型调用如何结束。若 provider 提供了 usage，所有终态事件都会携带累计 usage；可恢复的工具执行错误仍会回传模型，不会直接结束 run。
+
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
 安装依赖：
