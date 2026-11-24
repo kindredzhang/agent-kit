@@ -15,6 +15,14 @@ export type MessageDelta =
   | { type: "reasoning"; text: string }
   | { type: "refusal"; text: string };
 
+export type AgentStopReason =
+  | "completed"
+  | "refusal"
+  | "max_turns"
+  | "cancelled"
+  | "length"
+  | "error";
+
 export type AgentEvent =
   | { type: "agent.started"; runId: string; provider: ModelProvider }
   | { type: "turn.started"; runId: string; turn: number }
@@ -39,7 +47,7 @@ export type AgentEvent =
       approvalId: string;
       toolCallId: string;
       decision: "approved" | "rejected";
-      reason?: "no_handler" | "rejected" | "handler_failed";
+      reason?: "no_handler" | "rejected" | "handler_failed" | "cancelled";
     }
   | { type: "tool.execution.started"; runId: string; turn: number; toolCallId: string; name: string }
   | { type: "tool.execution.completed"; runId: string; turn: number; toolCallId: string; name: string; result: JsonValue }
@@ -50,12 +58,22 @@ export type AgentEvent =
   | {
       type: "agent.completed";
       runId: string;
+      stopReason: "completed" | "refusal";
       message: Extract<AgentMessage, { role: "assistant" }>;
       finishReason: FinishReason;
       usage?: TokenUsage;
       responseId?: string;
     }
-  | { type: "agent.failed"; runId: string; error: Error };
+  | {
+      type: "agent.stopped";
+      runId: string;
+      stopReason: "max_turns" | "cancelled" | "length";
+      message?: Extract<AgentMessage, { role: "assistant" }>;
+      finishReason?: FinishReason;
+      usage?: TokenUsage;
+      responseId?: string;
+    }
+  | { type: "agent.failed"; runId: string; stopReason: "error"; error: Error; usage?: TokenUsage };
 
 export interface AgentOptions {
   model: LanguageModel;
@@ -104,6 +122,10 @@ function combineUsage(current: TokenUsage | undefined, next: TokenUsage): TokenU
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
 }
 
 function failedOutcome(toolCall: AgentToolCall, error: unknown): ToolExecutionOutcome {
@@ -167,10 +189,19 @@ export class Agent {
 
     try {
       for (let turn = 1; turn <= this.maxTurns; turn += 1) {
+        if (input.signal?.aborted) {
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "cancelled",
+            ...(totalUsage ? { usage: totalUsage } : {}),
+          };
+          return;
+        }
+
         const messageId = crypto.randomUUID();
         let content = "";
         let finishReason: FinishReason = "other";
-        let usage: TokenUsage | undefined;
         let responseId: string | undefined;
         const toolCalls: AgentToolCall[] = [];
 
@@ -224,7 +255,7 @@ export class Agent {
               yield { ...event, runId, turn };
               break;
             case "usage":
-              usage = event.usage;
+              totalUsage = combineUsage(totalUsage, event.usage);
               yield { ...event, runId, turn };
               break;
             case "finish":
@@ -233,8 +264,6 @@ export class Agent {
               break;
           }
         }
-
-        if (usage) totalUsage = combineUsage(totalUsage, usage);
 
         const message: Extract<AgentMessage, { role: "assistant" }> = {
           id: messageId,
@@ -247,10 +276,37 @@ export class Agent {
         yield { type: "message.completed", runId, turn, message };
         yield { type: "turn.completed", runId, turn, finishReason };
 
-        if (toolCalls.length === 0) {
+        if (input.signal?.aborted) {
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "cancelled",
+            message,
+            finishReason,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(responseId ? { responseId } : {}),
+          };
+          return;
+        }
+
+        if (finishReason === "length") {
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "length",
+            message,
+            finishReason,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(responseId ? { responseId } : {}),
+          };
+          return;
+        }
+
+        if (finishReason === "refusal" || toolCalls.length === 0) {
           yield {
             type: "agent.completed",
             runId,
+            stopReason: finishReason === "refusal" ? "refusal" : "completed",
             message,
             finishReason,
             ...(totalUsage ? { usage: totalUsage } : {}),
@@ -261,9 +317,13 @@ export class Agent {
 
         if (turn === this.maxTurns) {
           yield {
-            type: "agent.failed",
+            type: "agent.stopped",
             runId,
-            error: new Error(`Agent reached the maximum of ${this.maxTurns} turns before receiving a final response.`),
+            stopReason: "max_turns",
+            message,
+            finishReason,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(responseId ? { responseId } : {}),
           };
           return;
         }
@@ -317,6 +377,28 @@ export class Agent {
               tool: approvalTool,
             };
 
+            if (input.signal?.aborted) {
+              yield {
+                type: "tool.approval.resolved",
+                runId,
+                turn,
+                approvalId,
+                toolCallId: toolCall.id,
+                decision: "rejected",
+                reason: "cancelled",
+              };
+              yield {
+                type: "agent.stopped",
+                runId,
+                stopReason: "cancelled",
+                message,
+                finishReason,
+                ...(totalUsage ? { usage: totalUsage } : {}),
+                ...(responseId ? { responseId } : {}),
+              };
+              return;
+            }
+
             if (!this.options.approveTool) {
               yield {
                 type: "tool.approval.resolved",
@@ -345,7 +427,7 @@ export class Agent {
                 approvalId,
                 toolCallId: toolCall.id,
                 decision: "rejected",
-                reason: "handler_failed",
+                reason: isAbortError(error, input.signal) ? "cancelled" : "handler_failed",
               };
               throw error;
             }
@@ -374,6 +456,19 @@ export class Agent {
 
         let planIndex = 0;
         while (planIndex < plans.length) {
+          if (input.signal?.aborted) {
+            yield {
+              type: "agent.stopped",
+              runId,
+              stopReason: "cancelled",
+              message,
+              finishReason,
+              ...(totalUsage ? { usage: totalUsage } : {}),
+              ...(responseId ? { responseId } : {}),
+            };
+            return;
+          }
+
           const plan = plans[planIndex]!;
 
           if (!canRunConcurrently(plan.tool)) {
@@ -384,6 +479,18 @@ export class Agent {
               toolCallId: plan.toolCall.id,
               name: plan.toolCall.name,
             };
+            if (input.signal?.aborted) {
+              yield {
+                type: "agent.stopped",
+                runId,
+                stopReason: "cancelled",
+                message,
+                finishReason,
+                ...(totalUsage ? { usage: totalUsage } : {}),
+                ...(responseId ? { responseId } : {}),
+              };
+              return;
+            }
             const outcome = await this.executeTool(plan, runId, turn, input.signal);
             outcomes[plan.index] = outcome;
             yield this.executionEvent(runId, turn, outcome);
@@ -404,6 +511,19 @@ export class Agent {
               toolCallId: batchPlan.toolCall.id,
               name: batchPlan.toolCall.name,
             };
+          }
+
+          if (input.signal?.aborted) {
+            yield {
+              type: "agent.stopped",
+              runId,
+              stopReason: "cancelled",
+              message,
+              finishReason,
+              ...(totalUsage ? { usage: totalUsage } : {}),
+              ...(responseId ? { responseId } : {}),
+            };
+            return;
           }
 
           const executions = batch.map((batchPlan, batchIndex) =>
@@ -437,10 +557,22 @@ export class Agent {
         }
       }
     } catch (error) {
+      if (isAbortError(error, input.signal)) {
+        yield {
+          type: "agent.stopped",
+          runId,
+          stopReason: "cancelled",
+          ...(totalUsage ? { usage: totalUsage } : {}),
+        };
+        return;
+      }
+
       yield {
         type: "agent.failed",
         runId,
+        stopReason: "error",
         error: toError(error),
+        ...(totalUsage ? { usage: totalUsage } : {}),
       };
     }
   }
