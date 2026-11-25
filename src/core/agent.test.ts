@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { Agent } from "./agent";
 import type { AgentEvent } from "./agent";
+import { InMemorySessionStore } from "./session";
+import type { SessionStore } from "./session";
 import { defineTool } from "./tools";
 import { z } from "zod";
 import type { LanguageModel, ModelRequest, ModelStreamEvent } from "./types";
@@ -405,6 +407,258 @@ test("keeps tool execution errors recoverable by the model", async () => {
   expect(events.some((event) => event.type === "tool.execution.failed")).toBe(true);
   expect(receivedToolError).toBe(true);
   expect(events.at(-1)).toMatchObject({ type: "agent.completed", stopReason: "completed" });
+});
+
+test("continues a conversation from messages persisted in a session", async () => {
+  const requests: ModelRequest[] = [];
+  let responseIndex = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(request: ModelRequest) {
+      requests.push({ ...request, messages: [...request.messages] });
+      yield { type: "text.delta", delta: responseIndex++ === 0 ? "Hello." : "Welcome back." };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const sessionStore = new InMemorySessionStore();
+  const firstAgent = new Agent({ model, instructions: "Keep this instruction.", sessionStore });
+  const secondAgent = new Agent({ model, instructions: "Keep this instruction.", sessionStore });
+
+  const firstEvents: AgentEvent[] = [];
+  const secondEvents: AgentEvent[] = [];
+  for await (const event of firstAgent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Hello." }],
+  })) {
+    firstEvents.push(event);
+  }
+  for await (const event of secondAgent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "What did I say?" }],
+  })) {
+    secondEvents.push(event);
+  }
+
+  expect(firstEvents.at(-1)).toMatchObject({ type: "agent.completed" });
+  expect(secondEvents.at(-1)).toMatchObject({ type: "agent.completed" });
+  expect(requests[1]?.messages).toEqual([
+    { role: "system", content: "Keep this instruction." },
+    { role: "user", content: "Hello." },
+    expect.objectContaining({ role: "assistant", content: "Hello." }),
+    { role: "user", content: "What did I say?" },
+  ]);
+  expect(await sessionStore.load("conversation-1")).toEqual([
+    { role: "user", content: "Hello." },
+    expect.objectContaining({ role: "assistant", content: "Hello." }),
+    { role: "user", content: "What did I say?" },
+    expect.objectContaining({ role: "assistant", content: "Welcome back." }),
+  ]);
+});
+
+test("persists the complete tool interaction for a completed session run", async () => {
+  const sessionStore = new InMemorySessionStore();
+  let responseIndex = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      if (responseIndex++ === 0) {
+        yield { type: "tool.call.completed", toolCall: { id: "call_1", name: "lookup", input: { id: "a" } } };
+        yield { type: "tool.call.completed", toolCall: { id: "call_2", name: "lookup", input: { id: "b" } } };
+        yield { type: "finish", finishReason: "tool_calls" };
+        return;
+      }
+
+      yield { type: "text.delta", delta: "Both records were found." };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const lookup = defineTool({
+    name: "lookup",
+    description: "Look up a record.",
+    input: z.object({ id: z.string() }),
+    annotations: { readOnly: true },
+    execute: ({ id }) => ({ found: id }),
+  });
+  const agent = new Agent({ model, tools: [lookup], sessionStore });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Look up both records." }],
+  })) {
+    events.push(event);
+  }
+
+  expect(events.at(-1)).toMatchObject({ type: "agent.completed", stopReason: "completed" });
+  expect(await sessionStore.load("conversation-1")).toMatchObject([
+    { role: "user", content: "Look up both records." },
+    {
+      role: "assistant",
+      toolCalls: [
+        { id: "call_1", name: "lookup", input: { id: "a" } },
+        { id: "call_2", name: "lookup", input: { id: "b" } },
+      ],
+    },
+    { role: "tool", toolCallId: "call_1", content: { found: "a" } },
+    { role: "tool", toolCallId: "call_2", content: { found: "b" } },
+    { role: "assistant", content: "Both records were found." },
+  ]);
+});
+
+test("does not persist stopped or failed session runs", async () => {
+  const sessionStore = new InMemorySessionStore();
+  const stoppedModel = createModel([
+    { type: "tool.call.completed", toolCall: { id: "call_1", name: "lookup", input: {} } },
+    { type: "finish", finishReason: "tool_calls" },
+  ]);
+  const failedModel: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      throw new Error("Provider unavailable.");
+    },
+  };
+  const cancelledController = new AbortController();
+  const cancelledModel: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      cancelledController.abort();
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const runs = [
+    {
+      sessionId: "stopped",
+      agent: new Agent({ model: stoppedModel, sessionStore, maxTurns: 1 }),
+      input: { messages: [{ role: "user" as const, content: "Stop before tool execution." }] },
+      stopReason: "max_turns",
+    },
+    {
+      sessionId: "failed",
+      agent: new Agent({ model: failedModel, sessionStore }),
+      input: { messages: [{ role: "user" as const, content: "Fail before completion." }] },
+      stopReason: "error",
+    },
+    {
+      sessionId: "cancelled",
+      agent: new Agent({ model: cancelledModel, sessionStore }),
+      input: { messages: [{ role: "user" as const, content: "Cancel before completion." }], signal: cancelledController.signal },
+      stopReason: "cancelled",
+    },
+  ] as const;
+
+  for (const run of runs) {
+    const events: AgentEvent[] = [];
+    for await (const event of run.agent.stream({ ...run.input, sessionId: run.sessionId })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({ stopReason: run.stopReason });
+    expect(await sessionStore.load(run.sessionId)).toEqual([]);
+  }
+});
+
+test("requires a session store when a session id is provided", async () => {
+  let modelRequests = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      modelRequests += 1;
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({ model });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Continue." }],
+  })) {
+    events.push(event);
+  }
+
+  expect(events.at(-1)).toMatchObject({ type: "agent.failed", error: { message: "A sessionStore must be configured when sessionId is provided." } });
+  expect(modelRequests).toBe(0);
+});
+
+test("reports session store read and write errors as run failures", async () => {
+  for (const failedOperation of ["load", "append"] as const) {
+    const expectedMessage = `Session ${failedOperation} failed.`;
+    const sessionStore: SessionStore = {
+      async load() {
+        if (failedOperation === "load") throw new Error(expectedMessage);
+        return [];
+      },
+      async append() {
+        if (failedOperation === "append") throw new Error(expectedMessage);
+      },
+      async clear() {},
+    };
+    const agent = new Agent({
+      model: createModel([{ type: "finish", finishReason: "stop" }]),
+      sessionStore,
+    });
+    const events: AgentEvent[] = [];
+
+    for await (const event of agent.stream({
+      sessionId: "conversation-1",
+      messages: [{ role: "user", content: "Continue." }],
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "agent.failed",
+      stopReason: "error",
+      error: { message: expectedMessage },
+    });
+  }
+});
+
+test("does not persist run-local context compaction over session history", async () => {
+  const sessionStore = new InMemorySessionStore();
+  const storedHistory = [
+    { role: "user" as const, content: "Old question." },
+    { role: "assistant" as const, content: "Old answer." },
+    { role: "user" as const, content: "Recent question." },
+    { role: "assistant" as const, content: "Recent answer." },
+  ];
+  await sessionStore.append("conversation-1", storedHistory);
+
+  let request: ModelRequest | undefined;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(modelRequest: ModelRequest) {
+      request = { ...modelRequest, messages: [...modelRequest.messages] };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({
+    model,
+    sessionStore,
+    maxContextTokens: 3,
+    estimateContextTokens: ({ messages }) => messages.length,
+  });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Current question." }],
+  })) {
+    events.push(event);
+  }
+
+  expect(request?.messages).toEqual([
+    { role: "user", content: "Recent question." },
+    { role: "assistant", content: "Recent answer." },
+    { role: "user", content: "Current question." },
+  ]);
+  expect(events.some((event) => event.type === "agent.context.compacted")).toBe(true);
+  const persistedMessages = await sessionStore.load("conversation-1");
+  expect(persistedMessages.slice(0, 4)).toEqual(storedHistory);
+  expect(persistedMessages.slice(4)).toMatchObject([
+    { role: "user", content: "Current question." },
+    { role: "assistant", content: "" },
+  ]);
 });
 
 test("compacts the oldest input turns while preserving instructions and the latest request", async () => {

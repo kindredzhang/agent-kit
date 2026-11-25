@@ -1,5 +1,7 @@
 import { ContextManager } from "./context";
 import type { ContextTokenEstimator } from "./context";
+import { assertSessionId } from "./session";
+import type { SessionStore } from "./session";
 import { toJsonValue } from "./json";
 import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools";
 import type {
@@ -96,10 +98,12 @@ export interface AgentOptions {
   maxTurns?: number;
   maxContextTokens?: number;
   estimateContextTokens?: ContextTokenEstimator;
+  sessionStore?: SessionStore;
 }
 
 export interface AgentRunInput {
   messages: readonly AgentMessage[];
+  sessionId?: string;
   signal?: AbortSignal;
 }
 
@@ -184,23 +188,16 @@ export class Agent {
 
   async *stream(input: AgentRunInput): AsyncGenerator<AgentEvent> {
     const runId = crypto.randomUUID();
-    const messages: AgentMessage[] = [...input.messages];
-
-    if (this.options.instructions !== undefined) {
-      messages.unshift({ role: "system", content: this.options.instructions });
-    }
-
+    const inputMessages = [...input.messages];
+    const sessionMessagesToAppend = [...inputMessages];
+    const messages: AgentMessage[] = [];
+    const sessionStore = this.options.sessionStore;
     const tools = this.options.tools?.map(({ name, description, inputSchema, strict }) => ({
       name,
       description,
       inputSchema,
       ...(strict !== undefined ? { strict } : {}),
     }));
-    const contextManager = new ContextManager(
-      this.options.maxContextTokens,
-      this.options.estimateContextTokens,
-      messages,
-    );
 
     yield {
       type: "agent.started",
@@ -211,6 +208,22 @@ export class Agent {
     let totalUsage: TokenUsage | undefined;
 
     try {
+      if (input.sessionId !== undefined) {
+        assertSessionId(input.sessionId);
+        if (!sessionStore) throw new Error("A sessionStore must be configured when sessionId is provided.");
+        messages.push(...await sessionStore.load(input.sessionId));
+      }
+      messages.push(...inputMessages);
+      if (this.options.instructions !== undefined) {
+        messages.unshift({ role: "system", content: this.options.instructions });
+      }
+
+      const contextManager = new ContextManager(
+        this.options.maxContextTokens,
+        this.options.estimateContextTokens,
+        messages,
+      );
+
       for (let turn = 1; turn <= this.maxTurns; turn += 1) {
         if (input.signal?.aborted) {
           yield {
@@ -328,6 +341,7 @@ export class Agent {
         };
 
         messages.push(message);
+        sessionMessagesToAppend.push(message);
         yield { type: "message.completed", runId, turn, message };
         yield { type: "turn.completed", runId, turn, finishReason };
 
@@ -358,6 +372,9 @@ export class Agent {
         }
 
         if (finishReason === "refusal" || toolCalls.length === 0) {
+          if (input.sessionId !== undefined && sessionStore) {
+            await sessionStore.append(input.sessionId, sessionMessagesToAppend);
+          }
           yield {
             type: "agent.completed",
             runId,
@@ -611,6 +628,7 @@ export class Agent {
             ...(outcome.error ? { isError: true } : {}),
           };
           messages.push(toolMessage);
+          sessionMessagesToAppend.push(toolMessage);
           toolInteractionMessages.push(toolMessage);
         }
         contextManager.addToolInteraction(toolInteractionMessages);

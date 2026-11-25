@@ -14,13 +14,14 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 - 工具策略包含 `readOnly`、`destructive`、`idempotent` 与进程内审批；明确标记为只读且非破坏性的工具可并行，其他工具默认需要审批并按序执行；
 - Agent run 提供独立的停止原因和累计 usage，`AbortSignal` 已贯穿到 `ModelRequest` 与 `ToolExecutionContext`；
 - 可选的 run-local 上下文预算与确定性压缩：按需估算完整模型输入，移除较早的完整对话或工具交互，并以事件报告缩减；
+- `SessionStore` 支持内存与 SQLite 实现，可跨 run 加载和追加对话历史；
 - 完整事件流覆盖 run、model turn、消息、工具执行、审批与上下文压缩。
 
-后续可对照的能力包括 Session 持久化与恢复、hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
+后续可对照的能力包括同一 run 的暂停与恢复、hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
 
 仍待推进的核心能力：
 
-1. **跨 run 会话持久化与恢复**。当前上下文压缩只作用于一次 `Agent.stream()` run；继续对话、跨进程暂停和恢复同一个 run 都需要独立的持久化状态模型。
+1. **同一 run 的暂停与恢复**。Session 保存已完成的对话，不保存中断 run 的待执行工具、审批决定或累计 usage；恢复同一个 run 需要独立的持久化状态模型。
 2. **追踪、评估与扩展集成**。需要先明确稳定的 run/turn/tool 事件如何映射到 span、如何做确定性的轨迹评估，再决定 MCP 与子代理的接入形态。
 
 ---
@@ -67,7 +68,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 ## 3. 对 AgentKit 的分期建议
 
-排序原则：**先明确 run 为什么结束，再给有副作用的工具加执行策略，然后限制单次 run 的上下文增长，最后再做跨 run 持久化与扩展**。当前 `instructions` 已由 [Anthropic 适配器](../../src/providers/anthropic/messages.ts) 合并到顶层 `system` 参数，不需要列为待修问题。审批若只在当前进程内等待，不依赖可序列化快照；只有跨进程暂停/恢复才需要 run state。
+排序原则：**先明确 run 为什么结束，再给有副作用的工具加执行策略，然后限制单次 run 的上下文增长，再实现跨 run Session；同一 run 的暂停恢复、追踪与扩展随后推进**。当前 `instructions` 已由 [Anthropic 适配器](../../src/providers/anthropic/messages.ts) 合并到顶层 `system` 参数，不需要列为待修问题。审批若只在当前进程内等待，不依赖可序列化快照；只有跨进程暂停/恢复才需要 run state。
 
 ### 阶段 0：终止语义与运行边界（已完成）
 
@@ -92,11 +93,15 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 超预算时按顺序移除较早的完整对话轮次或工具交互组，保留 system/developer 指令与当前 user 请求；assistant 工具调用及其整批结果作为一个压缩单元。
 - 每次缩减发出 `agent.context.compacted`，仅包含缩减前后估算值和移除轮次数；保留内容仍超限时，在调用模型前以 `context_limit` 停止。压缩不调用模型生成摘要。
 
-### 阶段 3：Session、暂停与恢复
+### 阶段 3：Session 持久化与跨 run 对话（已完成）
 
-- 定义最小 `Session` 接口：`load(sessionId)` / `append(items)` / `clear()`，结构对照 Agents SDK 的 session 操作与历史截取语义（[sessions](https://openai.github.io/openai-agents-python/sessions/)）。先给内存实现，再给一个 `bun:sqlite` 实现（符合项目「用 bun:sqlite」的约定）。
-- `AgentRunInput` 从「一次 messages」演进为「session + 新输入」，继续对话与恢复同一个中断 run 使用清楚区分的入口。
-- 只有此阶段才加入可持久化 `AgentRunState`：保存 messages、待执行工具调用、审批决定状态、turn 与累计 usage；为同一 run 恢复定义身份校验和原子状态转换。文档明确快照需要宿主鉴权，不保证 exactly-once；会产生副作用的工具应支持外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。
+- `SessionStore` 提供 `load(sessionId)` / `append(sessionId, messages)` / `clear(sessionId)`，并提供内存实现与 `bun:sqlite` 实现；SQLite 的每次 append 批次在事务内写入。
+- `AgentRunInput` 接收 `sessionId` 与本次新增 `messages`。新 Agent 实例可以从同一个 Session 延续已完成的对话；`instructions` 不进入历史，run-local 上下文压缩也不会改写 Session。
+- 只有以 `agent.completed` 结束的 run 会追加 Session。停止、取消或失败的 run 不持久化；宿主需串行执行相同 `sessionId` 的 run。
+
+#### 后续：同一 run 的暂停与恢复
+
+- 增加可持久化 `AgentRunState`：保存 messages、待执行工具调用、审批决定状态、turn 与累计 usage；为同一 run 恢复定义身份校验和原子状态转换。文档明确快照需要宿主鉴权，不保证 exactly-once；会产生副作用的工具应支持外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。
 - 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，AgentKit 先把第一层（线程内）做对，跨线程记忆属于应用层。
 
 ### 阶段 4：追踪与评估
@@ -130,7 +135,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 1. **核心行为通过公开 `Agent.stream()` seam 测试**。使用确定性的 `LanguageModel` 假实现验证 provider-neutral 行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
 2. **运行状态通过事件观察**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别）；审批、压缩与限额等运行状态通过事件暴露，宿主策略回调提供决定，但不替代事件时间线。
-3. **`ToolExecutionContext` 需要扩张而不是被替换**：加 `sessionId`、`approvalId`、`runState` 引用，保持现在的 `runId/turn/toolCallId/signal`。
+3. **`ToolExecutionContext` 需要扩张而不是被替换**：宿主工具确有需要时可增加 `sessionId`、`approvalId`；`runState` 引用留待暂停/恢复方案确定后再加入，保持现在的 `runId/turn/toolCallId/signal`。
 4. **不要把 `finishReason` 当终止原因用**。AI SDK 的文档已经踩过这个坑：`finishReason` 只是最后一次模型调用，循环是否因步数或审批而停，必须由独立的终止原因表达（[loop control](https://ai-sdk.dev/docs/agents/loop-control)）。
 
 ---

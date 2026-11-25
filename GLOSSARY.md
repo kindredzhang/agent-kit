@@ -28,6 +28,10 @@ _Avoid_: Summarization
 One request to a language model and its response within an Agent run.
 _Avoid_: Agent run
 
+**Session**:
+A conversation history that can be continued across multiple Agent runs.
+_Avoid_: Agent run
+
 **Tool**:
 A named capability that an Agent can make available to a language model for execution.
 _Avoid_: Function, plugin
