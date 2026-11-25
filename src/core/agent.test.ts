@@ -406,3 +406,251 @@ test("keeps tool execution errors recoverable by the model", async () => {
   expect(receivedToolError).toBe(true);
   expect(events.at(-1)).toMatchObject({ type: "agent.completed", stopReason: "completed" });
 });
+
+test("compacts the oldest input turns while preserving instructions and the latest request", async () => {
+  let estimatorSawToolDefinition = false;
+  let estimatorReceivedOutputLimit = false;
+  const lookup = defineTool({
+    name: "lookup",
+    description: "Look up a record.",
+    input: z.object({}),
+    annotations: { readOnly: true },
+    execute: () => ({ found: true }),
+  });
+  const inputMessages = [
+    { role: "user" as const, content: "Old question." },
+    { role: "assistant" as const, content: "Old answer." },
+    { role: "user" as const, content: "Middle question." },
+    { role: "assistant" as const, content: "Middle answer." },
+    { role: "user" as const, content: "Recent old question." },
+    { role: "assistant" as const, content: "Recent old answer." },
+    { role: "user" as const, content: "Current question." },
+  ];
+  let request: ModelRequest | undefined;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(modelRequest: ModelRequest) {
+      request = { ...modelRequest, messages: [...modelRequest.messages] };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({
+    model,
+    instructions: "Keep this instruction.",
+    tools: [lookup],
+    maxOutputTokens: 24,
+    maxContextTokens: 4,
+    estimateContextTokens: (request) => {
+      estimatorSawToolDefinition = request.tools?.some((tool) => tool.name === "lookup") ?? false;
+      estimatorReceivedOutputLimit = "maxOutputTokens" in request;
+      return request.messages.length;
+    },
+  });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({ messages: inputMessages })) {
+    events.push(event);
+  }
+
+  expect(request?.messages).toEqual([
+    { role: "system", content: "Keep this instruction." },
+    { role: "user", content: "Recent old question." },
+    { role: "assistant", content: "Recent old answer." },
+    { role: "user", content: "Current question." },
+  ]);
+  expect(request?.tools?.map((tool) => tool.name)).toEqual(["lookup"]);
+  expect(request?.maxOutputTokens).toBe(24);
+  expect(estimatorSawToolDefinition).toBe(true);
+  expect(estimatorReceivedOutputLimit).toBe(false);
+  expect(events.findIndex((event) => event.type === "agent.context.compacted")).toBeLessThan(
+    events.findIndex((event) => event.type === "turn.started"),
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: "agent.context.compacted",
+      turn: 1,
+      estimatedTokensBefore: 8,
+      estimatedTokensAfter: 4,
+      removedTurnCount: 2,
+    }),
+  );
+  expect(inputMessages).toEqual([
+    { role: "user", content: "Old question." },
+    { role: "assistant", content: "Old answer." },
+    { role: "user", content: "Middle question." },
+    { role: "assistant", content: "Middle answer." },
+    { role: "user", content: "Recent old question." },
+    { role: "assistant", content: "Recent old answer." },
+    { role: "user", content: "Current question." },
+  ]);
+});
+
+test("compacts an older tool interaction as one unit between model turns", async () => {
+  const requests: ModelRequest[] = [];
+  let responseIndex = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(request: ModelRequest) {
+      requests.push({ ...request, messages: [...request.messages] });
+      if (responseIndex++ === 0) {
+        yield {
+          type: "tool.call.completed",
+          toolCall: { id: "call_1", name: "lookup", input: {} },
+        };
+        yield {
+          type: "tool.call.completed",
+          toolCall: { id: "call_2", name: "lookup", input: {} },
+        };
+        yield { type: "finish", finishReason: "tool_calls" };
+        return;
+      }
+
+      yield { type: "text.delta", delta: "Done." };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const lookup = defineTool({
+    name: "lookup",
+    description: "Look up a record.",
+    input: z.object({}),
+    annotations: { readOnly: true },
+    execute: () => ({ found: true }),
+  });
+  const agent = new Agent({
+    model,
+    tools: [lookup],
+    maxContextTokens: 2,
+    estimateContextTokens: ({ messages }) => messages.length,
+  });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({ messages: [{ role: "user", content: "Look it up." }] })) {
+    events.push(event);
+  }
+
+  expect(requests).toHaveLength(2);
+  expect(requests[1]?.messages).toEqual([{ role: "user", content: "Look it up." }]);
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: "agent.context.compacted",
+      turn: 2,
+      estimatedTokensBefore: 4,
+      estimatedTokensAfter: 1,
+      removedTurnCount: 1,
+    }),
+  );
+});
+
+test("stops before the model when protected context exceeds its budget", async () => {
+  let requests = 0;
+  const inputMessages = [
+    { role: "user" as const, content: "Old question." },
+    { role: "assistant" as const, content: "Old answer." },
+    { role: "user" as const, content: "Current question." },
+  ];
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      requests += 1;
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({
+    model,
+    instructions: "Keep this instruction.",
+    maxContextTokens: 1,
+    estimateContextTokens: ({ messages }) => messages.length,
+  });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({ messages: inputMessages })) {
+    events.push(event);
+  }
+
+  expect(requests).toBe(0);
+  expect(events.at(-1)).toMatchObject({
+    type: "agent.stopped",
+    stopReason: "context_limit",
+    context: { estimatedTokens: 2, maxContextTokens: 1 },
+  });
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: "agent.context.compacted",
+      estimatedTokensBefore: 4,
+      estimatedTokensAfter: 2,
+      removedTurnCount: 1,
+    }),
+  );
+  expect(events.some((event) => event.type === "turn.started")).toBe(false);
+  expect(inputMessages).toEqual([
+    { role: "user", content: "Old question." },
+    { role: "assistant", content: "Old answer." },
+    { role: "user", content: "Current question." },
+  ]);
+});
+
+test("leaves messages unchanged when no context budget is configured", async () => {
+  let estimatorCalls = 0;
+  let request: ModelRequest | undefined;
+  const inputMessages = [
+    { role: "user" as const, content: "Old question." },
+    { role: "assistant" as const, content: "Old answer." },
+    { role: "user" as const, content: "Current question." },
+  ];
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(modelRequest: ModelRequest) {
+      request = { ...modelRequest, messages: [...modelRequest.messages] };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({
+    model,
+    estimateContextTokens: () => {
+      estimatorCalls += 1;
+      return 0;
+    },
+  });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({ messages: inputMessages })) {
+    events.push(event);
+  }
+
+  expect(request?.messages).toEqual(inputMessages);
+  expect(estimatorCalls).toBe(0);
+  expect(events.some((event) => event.type === "agent.context.compacted")).toBe(false);
+});
+
+test("uses the default estimator when a context budget is configured", async () => {
+  let requests = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      requests += 1;
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({ model, maxContextTokens: 1 });
+  const events: AgentEvent[] = [];
+
+  for await (const event of agent.stream({ messages: [{ role: "user", content: "Current question." }] })) {
+    events.push(event);
+  }
+
+  expect(requests).toBe(0);
+  const terminal = events.at(-1);
+  expect(terminal).toMatchObject({
+    type: "agent.stopped",
+    stopReason: "context_limit",
+    context: { maxContextTokens: 1 },
+  });
+  if (terminal?.type === "agent.stopped") {
+    expect(terminal.context?.estimatedTokens).toBeGreaterThan(1);
+  }
+});
+
+test("requires a positive integer context budget", () => {
+  expect(() => new Agent({ model: createModel([]), maxContextTokens: 0 })).toThrow(RangeError);
+  expect(() => new Agent({ model: createModel([]), maxContextTokens: 1.5 })).toThrow(RangeError);
+});

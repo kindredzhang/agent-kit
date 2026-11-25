@@ -16,6 +16,14 @@ _Avoid_: Session
 The run-level outcome that explains whether an Agent completed, stopped, or failed, independent of how its last Model turn ended.
 _Avoid_: Finish reason
 
+**Context budget**:
+The maximum estimated input context allowed for one Model turn in an Agent run.
+_Avoid_: Output limit
+
+**Context compaction**:
+Reducing the active conversation context by removing older complete interactions while preserving instructions and the current request.
+_Avoid_: Summarization
+
 **Model turn**:
 One request to a language model and its response within an Agent run.
 _Avoid_: Agent run

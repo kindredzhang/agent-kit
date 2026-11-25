@@ -11,15 +11,17 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 - `LanguageModel` 单一抽象 + 三个适配器（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages）；
 - `defineTool` 把 Zod schema 转成 JSON Schema，执行前校验；工具失败以错误结果回灌模型；
-- 单轮内并行执行工具、按调用顺序回填结果，`maxTurns` 默认 10；
-- 完整的事件流（`agent.started` → `turn.started` → `message.delta` → `tool.execution.*` → `agent.completed` / `agent.failed`），`AbortSignal` 已贯穿到 `ModelRequest` 与 `ToolExecutionContext`。
+- 工具策略包含 `readOnly`、`destructive`、`idempotent` 与进程内审批；明确标记为只读且非破坏性的工具可并行，其他工具默认需要审批并按序执行；
+- Agent run 提供独立的停止原因和累计 usage，`AbortSignal` 已贯穿到 `ModelRequest` 与 `ToolExecutionContext`；
+- 可选的 run-local 上下文预算与确定性压缩：按需估算完整模型输入，移除较早的完整对话或工具交互，并以事件报告缩减；
+- 完整事件流覆盖 run、model turn、消息、工具执行、审批与上下文压缩。
 
-后续可对照的能力包括审批/中断、持久化与恢复、上下文压缩、hooks/中间件、追踪、MCP、子代理与预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
+后续可对照的能力包括 Session 持久化与恢复、hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
 
-值得优先处理的现状问题：
+仍待推进的核心能力：
 
-1. **`maxTurns` 触顶被报成 `agent.failed`**。主流框架会区分循环停止原因：Anthropic Agent SDK 用 `error_max_turns` 等 `ResultMessage` 子类型表达停止状态；OpenAI Agents SDK 的 Python 实现抛出 `MaxTurnsExceeded` 异常；Vercel AI SDK 的 `stoppedBy` 区分模型自然结束、停止条件、缺少工具执行器和审批中断，并明确指出 `finishReason` 只反映最后一次模型调用，不能代替循环停止原因（[Anthropic agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)、[OpenAI running agents](https://openai.github.io/openai-agents-python/running_agents/)、[AI SDK loop control](https://ai-sdk.dev/docs/agents/loop-control)）。AgentKit 当前把轮数耗尽作为 `agent.failed`；同样，取消、模型拒答和输出长度限制还没有统一的 run 级终止原因。
-2. **工具无条件并发执行**。AgentKit 还没有只读/有副作用分类或审批钩子；一旦工具会写入外部状态，默认并发可能产生冲突。Anthropic Agent SDK 对内置读工具与写工具采用不同并发策略，自定义工具默认串行；MCP 也建议宿主在工具调用时保留人类拒绝的能力（[Anthropic agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)、[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
+1. **跨 run 会话持久化与恢复**。当前上下文压缩只作用于一次 `Agent.stream()` run；继续对话、跨进程暂停和恢复同一个 run 都需要独立的持久化状态模型。
+2. **追踪、评估与扩展集成**。需要先明确稳定的 run/turn/tool 事件如何映射到 span、如何做确定性的轨迹评估，再决定 MCP 与子代理的接入形态。
 
 ---
 
@@ -59,46 +61,51 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 Agent SDK 的策略是**只读工具并发、写工具串行**，自定义工具默认串行，需要 `readOnlyHint` 注解才并发（[agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)）。MCP 规范要求客户端把工具注解视为不可信信息，建议始终保留人类拒绝调用的能力，并建议把工具执行错误回传给模型以便纠正；规范没有强制要求每次调用都弹出确认界面（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
 
-AgentKit 当前是无条件并行。一旦工具开始有副作用，这个默认值就从「快」变成「危险」——而它恰好又是审批策略需要消费的同一份元数据。两者应当一起做。
+AgentKit 已将工具注解与审批策略用于执行规划：明确标记为只读且非破坏性的工具可以并行，其他工具默认需要审批并顺序执行。注解仍是定义者声明，宿主需要在接入远程工具时验证其策略元数据。
 
 ---
 
 ## 3. 对 AgentKit 的分期建议
 
-排序原则：**先明确 run 为什么结束，再给有副作用的工具加执行策略，之后才做持久化与扩展**。当前 `instructions` 已由 [Anthropic 适配器](../../src/providers/anthropic/messages.ts) 合并到顶层 `system` 参数，不需要列为待修问题。审批若只在当前进程内等待，不依赖可序列化快照；只有跨进程暂停/恢复才需要 run state。
+排序原则：**先明确 run 为什么结束，再给有副作用的工具加执行策略，然后限制单次 run 的上下文增长，最后再做跨 run 持久化与扩展**。当前 `instructions` 已由 [Anthropic 适配器](../../src/providers/anthropic/messages.ts) 合并到顶层 `system` 参数，不需要列为待修问题。审批若只在当前进程内等待，不依赖可序列化快照；只有跨进程暂停/恢复才需要 run state。
 
-### 阶段 0：终止语义与运行边界
+### 阶段 0：终止语义与运行边界（已完成）
 
-- 增加独立于模型 `FinishReason` 的 run 级 `stopReason`，区分正常完成、轮数耗尽、取消、模型/工具错误与拒答等情况。模型的输出长度限制保留为模型停止信息，不能误报为 run 已正常完成。
-- 在成功、失败、取消和限额停止的最终事件中提供已知的累计 usage；避免让调用方只能从 `agent.completed` 读取成本信息。
-- 为 `maxTurns` 明确边界语义：当前实现将每次模型响应计为一轮，若最后一轮仍要求工具则停止执行该批工具并报告失败。新的终止原因应把它表达为限额停止。
+- run 级 `stopReason` 独立于模型 `FinishReason`，区分正常完成、拒答、轮数耗尽、取消、输出截断、上下文限额与错误。
+- 若 provider 提供 usage，成功、失败、取消和限额停止的最终事件都会携带累计 usage。
+- `maxTurns` 将每次模型响应计为一轮；最后一轮仍要求工具时，不执行该批工具，并以 `agent.stopped` / `max_turns` 表达限额停止。
 
 理由：调用方需要稳定判断是否可重试、是否已完成、是否需要提高预算；后续预算、追踪、审批恢复也都依赖清楚的终止状态。
 
-### 阶段 1：工具策略与进程内审批
+### 阶段 1：工具策略与进程内审批（已完成）
 
-- 为工具增加行为标记，例如 `readOnly`、`destructive`、`idempotent`。这些只是声明，不能单独作为安全判断；由宿主提供的策略决定是否允许运行。
-- 改为默认顺序执行；只有明确标记为只读、且宿主策略允许的工具才并行。这样并发能力仍可用，但不会把任意副作用工具默认放在一起执行。
-- 在工具执行前加入 `beforeTool`/审批谓词。拒绝时把结构化拒绝结果回填给模型并发出拒绝事件；对需要交互的调用方，可由回调等待审批，不必先引入远程审批协议。
-- 保持工具执行错误回填模型的行为，并为一次调用明确审批状态、工具定义和参数，避免调用方在回调中自行重建这些上下文。
+- 工具支持 `readOnly`、`destructive`、`idempotent` 注解与 `requiresApproval` 显式覆盖。注解是定义者声明，允许运行的决策仍由 Agent 策略和宿主审批决定。
+- 明确只读且非破坏性的工具可并行；其他工具默认需要审批并顺序执行。
+- `approveTool` 在工具执行前处理进程内审批。拒绝、缺少审批处理器、审批失败与取消都有明确的审批结果事件。
+- 工具执行错误仍会作为结果回填模型；审批回调收到工具定义、原始调用、校验后的参数与运行上下文。
 
-这一步先解决 AgentKit 作为库的核心责任：明确什么可以执行、何时可并行。工具注解不可信、策略由宿主控制的边界应写入文档（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
+这一阶段明确了 AgentKit 作为库在工具执行上的默认策略：哪些工具可以并行、哪些调用需要宿主批准。工具注解不可信、策略由宿主控制的约束应写入文档（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
 
-### 阶段 2：Session、暂停恢复与压缩
+### 阶段 2：run-local 上下文预算与压缩（已完成）
+
+- 通过可选的 `maxContextTokens` 限制每次模型请求的输入上下文，输出上限仍由 `maxOutputTokens` 控制；默认估算器提供厂商无关的近似值，`estimateContextTokens` 允许宿主替换估算方式。
+- 超预算时按顺序移除较早的完整对话轮次或工具交互组，保留 system/developer 指令与当前 user 请求；assistant 工具调用及其整批结果作为一个压缩单元。
+- 每次缩减发出 `agent.context.compacted`，仅包含缩减前后估算值和移除轮次数；保留内容仍超限时，在调用模型前以 `context_limit` 停止。压缩不调用模型生成摘要。
+
+### 阶段 3：Session、暂停与恢复
 
 - 定义最小 `Session` 接口：`load(sessionId)` / `append(items)` / `clear()`，结构对照 Agents SDK 的 session 操作与历史截取语义（[sessions](https://openai.github.io/openai-agents-python/sessions/)）。先给内存实现，再给一个 `bun:sqlite` 实现（符合项目「用 bun:sqlite」的约定）。
 - `AgentRunInput` 从「一次 messages」演进为「session + 新输入」，继续对话与恢复同一个中断 run 使用清楚区分的入口。
 - 只有此阶段才加入可持久化 `AgentRunState`：保存 messages、待执行工具调用、审批决定状态、turn 与累计 usage；为同一 run 恢复定义身份校验和原子状态转换。文档明确快照需要宿主鉴权，不保证 exactly-once；会产生副作用的工具应支持外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。
-- 压缩做成可拦截事件：`context.compaction.started/completed` + 一个可替换的摘要器，并把摘要 LLM 调用作为**独立事件**暴露，避免它混进普通 turn 的事件流（对照 `compact_boundary` 与 `PreCompact`）。
 - 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，AgentKit 先把第一层（线程内）做对，跨线程记忆属于应用层。
 
-### 阶段 3：追踪与评估
+### 阶段 4：追踪与评估
 
 - 把现有 `AgentEvent` 映射为 span 树：run → turn → chat（模型调用）→ execute_tool，字段采用 GenAI 语义约定（`gen_ai.operation.name`、`gen_ai.request.model`、输入输出可选记录），名称对齐 AI SDK 的 `invoke_agent` / `step` / `chat` / `execute_tool`（[telemetry](https://ai-sdk.dev/docs/ai-sdk-core/telemetry)）。先输出一个纯 JS 的 span 收集器接口，OTel 只作为可选实现，不引入运行时依赖。
 - 评估先用「轨迹夹具」而不是语义评分：为每个测试用例固定 expected tool trajectory，跑 `bun test` 做精确匹配；参考 ADK 的 `tool_trajectory_avg_score` 默认 1.0，并明确它比 `response_match_score`（ROUGE-1，对措辞敏感）更适合 CI（[evaluate](https://adk.dev/evaluate/)）。LLM 裁判作为后续可选项。
 - 注意隐私开关：默认是否记录工具入参与结果，必须显式可选（对照 `recordInputs`/`recordOutputs` 与 `trace_include_sensitive_data`）。
 
-### 阶段 4：MCP 与子代理
+### 阶段 5：MCP 与子代理
 
 - MCP 只做客户端侧的工具接入：`tools/list` → 适配为 `AgentTool`，`annotations` 直接喂给阶段 1 的审批策略；工具执行错误（`isError: true`）按现有「错误结果回灌模型」路径处理（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。传输先支持 stdio 与 Streamable HTTP。
 - 工具定义变更要做指纹校验，防「工具定义被替换」类攻击（AI SDK 文档明确建议对已审批工具做 fingerprint）（[MCP tools (AI SDK)](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)）。
@@ -121,8 +128,8 @@ AgentKit 当前是无条件并行。一旦工具开始有副作用，这个默�
 
 ## 4. 给实现的几条硬约束
 
-1. **每个新原语必须三家适配器同时通过测试**。审批与压缩最容易被写成「OpenAI Responses 专属」，因为它们在那里的服务端语义更强；但 Anthropic 的 tool_use/tool_result 与 Chat Completions 的函数调用都能承载同一份快照，差别只在序列化层。
-2. **事件是唯一可观测契约**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别），新增的一切（approval、compaction、budget）都应当是事件而不是回调，这样追踪、UI、测试共用一条通道。
+1. **核心行为通过公开 `Agent.stream()` seam 测试**。使用确定性的 `LanguageModel` 假实现验证 provider-neutral 行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
+2. **运行状态通过事件观察**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别）；审批、压缩与限额等运行状态通过事件暴露，宿主策略回调提供决定，但不替代事件时间线。
 3. **`ToolExecutionContext` 需要扩张而不是被替换**：加 `sessionId`、`approvalId`、`runState` 引用，保持现在的 `runId/turn/toolCallId/signal`。
 4. **不要把 `finishReason` 当终止原因用**。AI SDK 的文档已经踩过这个坑：`finishReason` 只是最后一次模型调用，循环是否因步数或审批而停，必须由独立的终止原因表达（[loop control](https://ai-sdk.dev/docs/agents/loop-control)）。
 

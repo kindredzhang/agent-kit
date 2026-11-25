@@ -1,3 +1,5 @@
+import { ContextManager } from "./context";
+import type { ContextTokenEstimator } from "./context";
 import { toJsonValue } from "./json";
 import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools";
 import type {
@@ -21,11 +23,20 @@ export type AgentStopReason =
   | "max_turns"
   | "cancelled"
   | "length"
+  | "context_limit"
   | "error";
 
 export type AgentEvent =
   | { type: "agent.started"; runId: string; provider: ModelProvider }
   | { type: "turn.started"; runId: string; turn: number }
+  | {
+      type: "agent.context.compacted";
+      runId: string;
+      turn: number;
+      estimatedTokensBefore: number;
+      estimatedTokensAfter: number;
+      removedTurnCount: number;
+    }
   | { type: "message.started"; runId: string; turn: number; messageId: string; role: "assistant" }
   | { type: "message.delta"; runId: string; turn: number; messageId: string; delta: MessageDelta }
   | { type: "tool.call.started"; runId: string; turn: number; toolCallId: string; name: string }
@@ -67,11 +78,12 @@ export type AgentEvent =
   | {
       type: "agent.stopped";
       runId: string;
-      stopReason: "max_turns" | "cancelled" | "length";
+      stopReason: "max_turns" | "cancelled" | "length" | "context_limit";
       message?: Extract<AgentMessage, { role: "assistant" }>;
       finishReason?: FinishReason;
       usage?: TokenUsage;
       responseId?: string;
+      context?: { estimatedTokens: number; maxContextTokens: number };
     }
   | { type: "agent.failed"; runId: string; stopReason: "error"; error: Error; usage?: TokenUsage };
 
@@ -82,6 +94,8 @@ export interface AgentOptions {
   approveTool?: ToolApprovalHandler;
   maxOutputTokens?: number;
   maxTurns?: number;
+  maxContextTokens?: number;
+  estimateContextTokens?: ContextTokenEstimator;
 }
 
 export interface AgentRunInput {
@@ -155,6 +169,10 @@ export class Agent {
     if (!Number.isSafeInteger(this.maxTurns) || this.maxTurns < 1) {
       throw new RangeError("maxTurns must be a positive integer.");
     }
+    if (options.maxContextTokens !== undefined &&
+      (!Number.isSafeInteger(options.maxContextTokens) || options.maxContextTokens < 1)) {
+      throw new RangeError("maxContextTokens must be a positive safe integer.");
+    }
 
     for (const tool of options.tools ?? []) {
       if (this.toolsByName.has(tool.name)) {
@@ -178,6 +196,11 @@ export class Agent {
       inputSchema,
       ...(strict !== undefined ? { strict } : {}),
     }));
+    const contextManager = new ContextManager(
+      this.options.maxContextTokens,
+      this.options.estimateContextTokens,
+      messages,
+    );
 
     yield {
       type: "agent.started",
@@ -194,6 +217,38 @@ export class Agent {
             type: "agent.stopped",
             runId,
             stopReason: "cancelled",
+            ...(totalUsage ? { usage: totalUsage } : {}),
+          };
+          return;
+        }
+
+        const context = contextManager.prepare(messages, tools);
+        if (context.removedTurnCount > 0) {
+          yield {
+            type: "agent.context.compacted",
+            runId,
+            turn,
+            estimatedTokensBefore: context.estimatedTokensBefore!,
+            estimatedTokensAfter: context.estimatedTokensAfter!,
+            removedTurnCount: context.removedTurnCount,
+          };
+        }
+        if (input.signal?.aborted) {
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "cancelled",
+            ...(totalUsage ? { usage: totalUsage } : {}),
+          };
+          return;
+        }
+
+        if (context.contextLimit) {
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "context_limit",
+            context: context.contextLimit,
             ...(totalUsage ? { usage: totalUsage } : {}),
           };
           return;
@@ -546,15 +601,19 @@ export class Agent {
           planIndex = batchEnd;
         }
 
+        const toolInteractionMessages: AgentMessage[] = [message];
         for (let index = 0; index < toolCalls.length; index += 1) {
           const outcome = outcomes[index]!;
-          messages.push({
+          const toolMessage: AgentMessage = {
             role: "tool",
             toolCallId: outcome.toolCall.id,
             content: outcome.result,
             ...(outcome.error ? { isError: true } : {}),
-          });
+          };
+          messages.push(toolMessage);
+          toolInteractionMessages.push(toolMessage);
         }
+        contextManager.addToolInteraction(toolInteractionMessages);
       }
     } catch (error) {
       if (isAbortError(error, input.signal)) {

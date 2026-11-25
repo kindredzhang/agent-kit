@@ -1,5 +1,6 @@
 export { Agent } from "./core/agent";
 export type { AgentEvent, AgentOptions, AgentRunInput, AgentStopReason, MessageDelta } from "./core/agent";
+export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context";
 export { defineTool } from "./core/tools";
 export type {
   AgentTool,
