@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, AgentTraceCollector, defineTool, evaluateToolTrajectory } from "../index";
-import type { AgentEvent, AgentTraceOptions, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent, AgentTraceCollector, defineTool, evaluateToolTrajectory } from "../index.js";
+import type { AgentEvent, AgentTraceOptions, LanguageModel, ModelStreamEvent } from "../index.js";
 
 async function collect(events: AsyncIterable<AgentEvent>, options?: AgentTraceOptions) {
   const collector = new AgentTraceCollector(options);

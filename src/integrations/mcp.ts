@@ -1,6 +1,6 @@
-import type { AnyAgentTool, ToolAnnotations } from "../core/tools";
-import type { JsonObject, JsonSchema, JsonValue } from "../core/types";
-import { toJsonValue } from "../core/json";
+import type { AnyAgentTool, ToolAnnotations } from "../core/tools.js";
+import type { JsonObject, JsonSchema, JsonValue } from "../core/types.js";
+import { toJsonValue } from "../core/json.js";
 
 export interface MCPToolDescriptor {
   name: string;

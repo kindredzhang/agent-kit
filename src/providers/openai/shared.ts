@@ -1,4 +1,4 @@
-import type { FinishReason } from "../../core/types";
+import type { FinishReason } from "../../core/types.js";
 
 export function mapOpenAIFinishReason(reason: string | null | undefined): FinishReason {
   switch (reason) {

@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SQLiteApprovalStore } from "../storage/sqlite-approval-store";
-import type { AgentApprovalRequest } from "../index";
+import { SQLiteApprovalStore } from "../storage/sqlite-approval-store.js";
+import type { AgentApprovalRequest } from "../index.js";
 
 function approvalRequest(runId: string, toolCallId: string): AgentApprovalRequest {
   return {

@@ -1,16 +1,16 @@
 import * as z from "zod";
-import { ContextManager } from "./context";
-import { AgentBudget, getBudgetContext, setBudgetContext } from "./budget";
-import type { AgentBudgetOptions, AgentBudgetSnapshot } from "./budget";
-import { abortableDelay, assertRetryPolicy } from "./retry";
-import type { RetryPolicy } from "./retry";
-import type { ContextTokenEstimator } from "./context";
-import { assertSessionId } from "./session";
-import type { SessionStore } from "./session";
-import type { AgentRunStore } from "./run-store";
-import { toJsonValue } from "./json";
-import { combineUsage } from "./usage";
-import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools";
+import { ContextManager } from "./context.js";
+import { AgentBudget, getBudgetContext, setBudgetContext } from "./budget.js";
+import type { AgentBudgetOptions, AgentBudgetSnapshot } from "./budget.js";
+import { abortableDelay, assertRetryPolicy } from "./retry.js";
+import type { RetryPolicy } from "./retry.js";
+import type { ContextTokenEstimator } from "./context.js";
+import { assertSessionId } from "./session.js";
+import type { SessionStore } from "./session.js";
+import type { AgentRunStore } from "./run-store.js";
+import { toJsonValue } from "./json.js";
+import { combineUsage } from "./usage.js";
+import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools.js";
 import type {
   AgentMessage,
   AgentToolCall,
@@ -22,7 +22,7 @@ import type {
   ModelProvider,
   TokenUsage,
   ToolDefinition,
-} from "./types";
+} from "./types.js";
 
 export interface AgentRunState {
   version: 1;

@@ -1,8 +1,8 @@
-import type { Agent, AgentEvent } from "./agent";
-import { toJsonValue } from "./json";
-import { assertRunId } from "./run-store";
-import type { ToolAnnotations } from "./tools";
-import type { JsonValue } from "./types";
+import type { Agent, AgentEvent } from "./agent.js";
+import { toJsonValue } from "./json.js";
+import { assertRunId } from "./run-store.js";
+import type { ToolAnnotations } from "./tools.js";
+import type { JsonValue } from "./types.js";
 
 export type AgentApprovalDecision = "approved" | "rejected";
 

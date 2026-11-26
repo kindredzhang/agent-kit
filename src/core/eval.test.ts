@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, defineTool, evaluateAgentCases, observeAgentEvents } from "../index";
-import type { AgentEvalCase, AgentEvalObservation, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent, defineTool, evaluateAgentCases, observeAgentEvents } from "../index.js";
+import type { AgentEvalCase, AgentEvalObservation, LanguageModel, ModelStreamEvent } from "../index.js";
 
 function scriptedModel(toolName?: string): LanguageModel {
   let calls = 0;

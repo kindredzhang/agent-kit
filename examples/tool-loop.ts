@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { Agent, AgentTraceCollector, defineTool, evaluateToolTrajectory } from "../src/index";
-import { createExampleModel, describeSettings } from "./shared";
+import { Agent, AgentTraceCollector, defineTool, evaluateToolTrajectory } from "../src/index.js";
+import { createExampleModel, describeSettings } from "./shared.js";
 
 const getWeather = defineTool({
   name: "get_weather",

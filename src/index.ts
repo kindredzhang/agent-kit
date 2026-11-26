@@ -1,4 +1,4 @@
-export { Agent } from "./core/agent";
+export { Agent } from "./core/agent.js";
 export type {
   AgentEvent,
   AgentHooks,
@@ -8,13 +8,13 @@ export type {
   AgentRunState,
   AgentStopReason,
   MessageDelta,
-} from "./core/agent";
-export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context";
-export type { AgentBudgetOptions, AgentBudgetSnapshot } from "./core/budget";
-export type { RetryContext, RetryPolicy } from "./core/retry";
-export { evaluateToolTrajectory } from "./core/evaluation";
-export type { ToolTrajectoryEvaluation, ToolTrajectoryStep } from "./core/evaluation";
-export { evaluateAgentCases, observeAgentEvents } from "./core/eval";
+} from "./core/agent.js";
+export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context.js";
+export type { AgentBudgetOptions, AgentBudgetSnapshot } from "./core/budget.js";
+export type { RetryContext, RetryPolicy } from "./core/retry.js";
+export { evaluateToolTrajectory } from "./core/evaluation.js";
+export type { ToolTrajectoryEvaluation, ToolTrajectoryStep } from "./core/evaluation.js";
+export { evaluateAgentCases, observeAgentEvents } from "./core/eval.js";
 export type {
   AgentEvalCase,
   AgentEvalExpectation,
@@ -23,8 +23,8 @@ export type {
   AgentEvalObserver,
   AgentEvalReport,
   AgentEvalResult,
-} from "./core/eval";
-export { AgentTraceCollector } from "./core/trace";
+} from "./core/eval.js";
+export { AgentTraceCollector } from "./core/trace.js";
 export type {
   AgentApprovalTrace,
   AgentModelTrace,
@@ -32,22 +32,22 @@ export type {
   AgentTrace,
   AgentTraceOptions,
   AgentTurnTrace,
-} from "./core/trace";
-export { InMemorySessionStore } from "./core/session";
-export type { SessionStore } from "./core/session";
-export { InMemoryRunStore } from "./core/run-store";
-export type { AgentRunStore } from "./core/run-store";
-export { AgentApprovalQueue, InMemoryApprovalStore } from "./core/approval";
+} from "./core/trace.js";
+export { InMemorySessionStore } from "./core/session.js";
+export type { SessionStore } from "./core/session.js";
+export { InMemoryRunStore } from "./core/run-store.js";
+export type { AgentRunStore } from "./core/run-store.js";
+export { AgentApprovalQueue, InMemoryApprovalStore } from "./core/approval.js";
 export type {
   AgentApprovalDecision,
   AgentApprovalRequest,
   AgentApprovalStore,
   AgentPausedEvent,
-} from "./core/approval";
-export { SQLiteSessionStore } from "./storage/sqlite-session";
-export { SQLiteRunStore } from "./storage/sqlite-run-store";
-export { SQLiteApprovalStore } from "./storage/sqlite-approval-store";
-export { createMCPToolSource } from "./integrations/mcp";
+} from "./core/approval.js";
+export { SQLiteSessionStore } from "./storage/sqlite-session.js";
+export { SQLiteRunStore } from "./storage/sqlite-run-store.js";
+export { SQLiteApprovalStore } from "./storage/sqlite-approval-store.js";
+export { createMCPToolSource } from "./integrations/mcp.js";
 export type {
   MCPToolCallResult,
   MCPToolClient,
@@ -55,10 +55,10 @@ export type {
   MCPToolListResult,
   MCPToolSource,
   MCPToolSourceOptions,
-} from "./integrations/mcp";
-export { createSubagentTool } from "./integrations/subagent";
-export type { SubagentToolOptions } from "./integrations/subagent";
-export { defineTool } from "./core/tools";
+} from "./integrations/mcp.js";
+export { createSubagentTool } from "./integrations/subagent.js";
+export type { SubagentToolOptions } from "./integrations/subagent.js";
+export { defineTool } from "./core/tools.js";
 export type {
   AgentTool,
   AnyAgentTool,
@@ -68,13 +68,7 @@ export type {
   ToolExecutionContext,
   ToolRetryContext,
   ToolRetryPolicy,
-} from "./core/tools";
-export { OpenAIChatCompletionsModel } from "./providers/openai/chat-completions";
-export type { OpenAIChatCompletionsModelOptions } from "./providers/openai/chat-completions";
-export { OpenAIResponsesModel } from "./providers/openai/responses";
-export type { OpenAIResponsesModelOptions } from "./providers/openai/responses";
-export { AnthropicMessagesModel } from "./providers/anthropic/messages";
-export type { AnthropicMessagesModelOptions } from "./providers/anthropic/messages";
+} from "./core/tools.js";
 export type {
   AgentMessage,
   AgentToolCall,
@@ -88,4 +82,4 @@ export type {
   ModelStreamEvent,
   TokenUsage,
   ToolDefinition,
-} from "./core/types";
+} from "./core/types.js";

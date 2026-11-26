@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { z } from "zod/v4";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { McpServer } from "@modelcontextprotocol/server";
-import { Agent, defineTool } from "../index";
-import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index";
-import { createMCPToolSource } from "./mcp";
-import type { MCPToolClient, MCPToolDescriptor } from "./mcp";
+import { Agent, defineTool } from "../index.js";
+import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
+import { createMCPToolSource } from "./mcp.js";
+import type { MCPToolClient, MCPToolDescriptor } from "./mcp.js";
 
 async function connectServer(register: (server: McpServer) => void) {
   const server = new McpServer({ name: "test-server", version: "1.0.0" });

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { Agent } from "../index";
-import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent } from "../index.js";
+import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
 
 async function collect(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];

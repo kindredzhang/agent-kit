@@ -52,6 +52,10 @@ _Avoid_: Retry
 A stable identifier for one logical action that a destination uses to reject duplicate execution; for a replayed Tool call it is the Tool call id.
 _Avoid_: Approval
 
+**Adapter**:
+A concrete `LanguageModel` implementation that translates between one vendor SDK's messages and stream events and the core types. Adapters are published on subpath exports so the core entry point stays free of vendor SDK types.
+_Avoid_: Provider, plugin
+
 **Tool**:
 A named capability that an Agent can make available to a language model for execution.
 _Avoid_: Function, plugin

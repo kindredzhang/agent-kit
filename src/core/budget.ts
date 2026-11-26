@@ -1,5 +1,5 @@
-import type { TokenUsage } from "./types";
-import { combineUsage } from "./usage";
+import type { TokenUsage } from "./types.js";
+import { combineUsage } from "./usage.js";
 
 export interface AgentBudgetOptions {
   maxModelCalls?: number;

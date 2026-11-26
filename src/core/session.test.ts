@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { InMemorySessionStore } from "./session";
-import type { AgentMessage } from "./types";
+import { InMemorySessionStore } from "./session.js";
+import type { AgentMessage } from "./types.js";
 
 test("keeps isolated session histories and returns independent message copies", async () => {
   const store = new InMemorySessionStore();

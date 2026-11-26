@@ -1,4 +1,4 @@
-import type { AgentMessage, ModelRequest, ToolDefinition } from "./types";
+import type { AgentMessage, ModelRequest, ToolDefinition } from "./types.js";
 
 export type ContextEstimateInput = Pick<ModelRequest, "messages" | "tools">;
 

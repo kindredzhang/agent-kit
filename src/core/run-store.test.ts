@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { InMemoryRunStore } from "../core/run-store";
-import { SQLiteRunStore } from "../storage/sqlite-run-store";
-import type { AgentRunState } from "../index";
+import { InMemoryRunStore } from "../core/run-store.js";
+import { SQLiteRunStore } from "../storage/sqlite-run-store.js";
+import type { AgentRunState } from "../index.js";
 
 function runState(runId: string, turn = 1): AgentRunState {
   const message = {

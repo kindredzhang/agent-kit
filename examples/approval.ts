@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
-import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../src/index";
-import { createExampleModel, describeSettings } from "./shared";
+import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../src/index.js";
+import { createExampleModel, describeSettings } from "./shared.js";
 
 const sent: string[] = [];
 

@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue } from "./types";
+import type { JsonObject, JsonValue } from "./types.js";
 
 export function parseJsonObject(source: string): JsonObject {
   const value: unknown = JSON.parse(source || "{}");

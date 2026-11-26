@@ -1,5 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { parseJsonObject, stringifyJson } from "../../core/json";
+import type Anthropic from "@anthropic-ai/sdk";
+import { parseJsonObject, stringifyJson } from "../../core/json.js";
 import type {
   AgentMessage,
   AgentToolCall,
@@ -8,7 +8,7 @@ import type {
   ModelRequest,
   ModelStreamEvent,
   ToolDefinition,
-} from "../../core/types";
+} from "../../core/types.js";
 
 export interface AnthropicMessagesModelOptions {
   client: Anthropic;

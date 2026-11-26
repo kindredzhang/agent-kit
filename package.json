@@ -1,24 +1,61 @@
 {
   "name": "agent-kit",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "description": "Vendor-agnostic agent loop for TypeScript: tools, approvals, durable runs, evals.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kindredzhang/agent-kit.git"
+  },
   "type": "module",
-  "private": true,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "import": "./dist/openai.js"
+    },
+    "./anthropic": {
+      "types": "./dist/anthropic.d.ts",
+      "import": "./dist/anthropic.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "GLOSSARY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "bun run tsc --noEmit",
-    "examples": "bun run examples/run-all.ts"
-  },
-  "devDependencies": {
-    "@modelcontextprotocol/client": "^2.4.0",
-    "@modelcontextprotocol/server": "^2.4.0",
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "build": "rm -rf dist && bunx tsc -p tsconfig.build.json",
+    "examples": "bun run examples/run-all.ts",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.13.0",
-    "openai": "^7.63.0",
     "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.30",
+    "openai": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@types/bun": "latest",
+    "openai": "^7.63.0",
+    "typescript": "^5.9.3"
   }
 }

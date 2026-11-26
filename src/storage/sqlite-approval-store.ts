@@ -1,10 +1,10 @@
-import type { Database } from "bun:sqlite";
-import { assertApprovalId, assertToolCallId } from "../core/approval";
-import type { AgentApprovalRequest, AgentApprovalStore } from "../core/approval";
-import { assertRunId } from "../core/run-store";
+import { assertApprovalId, assertToolCallId } from "../core/approval.js";
+import type { AgentApprovalRequest, AgentApprovalStore } from "../core/approval.js";
+import { assertRunId } from "../core/run-store.js";
+import type { SQLiteDatabase } from "./sqlite.js";
 
 export class SQLiteApprovalStore implements AgentApprovalStore {
-  constructor(private readonly database: Database) {
+  constructor(private readonly database: SQLiteDatabase) {
     this.database.run(`
       CREATE TABLE IF NOT EXISTS agentkit_agent_approvals (
         run_id TEXT NOT NULL,
@@ -19,7 +19,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
     assertRunId(request?.runId);
     assertApprovalId(request.approvalId);
     assertToolCallId(request.toolCallId);
-    this.database.query<never, [string, string, string]>(`
+    this.database.query<never>(`
       INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json)
       VALUES (?, ?, ?)
       ON CONFLICT (run_id, approval_id) DO UPDATE SET request_json = excluded.request_json
@@ -29,7 +29,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
 
   async load(runId: string): Promise<readonly AgentApprovalRequest[]> {
     assertRunId(runId);
-    const rows = this.database.query<{ request_json: string }, [string]>(`
+    const rows = this.database.query<{ request_json: string }>(`
       SELECT request_json
       FROM agentkit_agent_approvals
       WHERE run_id = ?
@@ -39,7 +39,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
   }
 
   async list(): Promise<readonly AgentApprovalRequest[]> {
-    const rows = this.database.query<{ request_json: string }, []>(`
+    const rows = this.database.query<{ request_json: string }>(`
       SELECT request_json
       FROM agentkit_agent_approvals
       ORDER BY rowid
@@ -49,7 +49,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
 
   async delete(runId: string): Promise<void> {
     assertRunId(runId);
-    this.database.query<never, [string]>(`
+    this.database.query<never>(`
       DELETE FROM agentkit_agent_approvals
       WHERE run_id = ?
     `).run(runId);

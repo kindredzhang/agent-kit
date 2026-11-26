@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { defineTool } from "../core/tools";
-import { getBudgetContext, setBudgetContext } from "../core/budget";
-import type { AnyAgentTool, ToolExecutionContext } from "../core/tools";
-import type { Agent } from "../core/agent";
-import type { TokenUsage } from "../core/types";
+import { defineTool } from "../core/tools.js";
+import { getBudgetContext, setBudgetContext } from "../core/budget.js";
+import type { AnyAgentTool, ToolExecutionContext } from "../core/tools.js";
+import type { Agent } from "../core/agent.js";
+import type { TokenUsage } from "../core/types.js";
 
 export interface SubagentToolOptions {
   name: string;

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type OpenAI from "openai";
-import { OpenAIChatCompletionsModel } from "./chat-completions";
-import type { ModelRequest, ModelStreamEvent } from "../../core/types";
+import { OpenAIChatCompletionsModel } from "./chat-completions.js";
+import type { ModelRequest, ModelStreamEvent } from "../../core/types.js";
 
 function chunk(delta: Record<string, unknown>, finishReason: string | null = null) {
   return { id: "chatcmpl-1", choices: [{ index: 0, delta, finish_reason: finishReason }] };

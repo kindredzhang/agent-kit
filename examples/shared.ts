@@ -1,6 +1,6 @@
 import OpenAI from "openai";
-import { OpenAIChatCompletionsModel } from "../src/index";
-import type { LanguageModel } from "../src/index";
+import { OpenAIChatCompletionsModel } from "../src/openai.js";
+import type { LanguageModel } from "../src/index.js";
 
 export interface ExampleModel {
   model: LanguageModel;

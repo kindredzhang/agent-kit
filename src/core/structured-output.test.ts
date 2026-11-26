@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, createSubagentTool, defineTool } from "../index";
-import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent, createSubagentTool, defineTool } from "../index.js";
+import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
 
 async function collect(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];

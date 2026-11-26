@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Agent, AgentApprovalQueue, InMemoryRunStore, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../index";
-import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent, AgentApprovalQueue, InMemoryRunStore, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../index.js";
+import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
 import { z } from "zod";
 
 function writeModel(): LanguageModel {

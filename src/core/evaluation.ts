@@ -1,4 +1,4 @@
-import type { AgentTrace } from "./trace";
+import type { AgentTrace } from "./trace.js";
 
 export interface ToolTrajectoryStep {
   turn: number;

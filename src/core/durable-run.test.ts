@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, InMemoryRunStore, InMemorySessionStore, defineTool } from "../index";
+import { Agent, InMemoryRunStore, InMemorySessionStore, defineTool } from "../index.js";
 import type {
   AgentEvent,
   AgentResumeInput,
@@ -8,7 +8,7 @@ import type {
   AgentRunStore,
   LanguageModel,
   ModelStreamEvent,
-} from "../index";
+} from "../index.js";
 
 async function collect(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];

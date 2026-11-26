@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { Agent } from "./agent";
-import type { AgentEvent, AgentRunState } from "./agent";
-import { InMemorySessionStore } from "./session";
-import type { SessionStore } from "./session";
-import { defineTool } from "./tools";
+import { Agent } from "./agent.js";
+import type { AgentEvent, AgentRunState } from "./agent.js";
+import { InMemorySessionStore } from "./session.js";
+import type { SessionStore } from "./session.js";
+import { defineTool } from "./tools.js";
 import { z } from "zod";
-import type { LanguageModel, ModelRequest, ModelStreamEvent } from "./types";
+import type { LanguageModel, ModelRequest, ModelStreamEvent } from "./types.js";
 
 function createModel(events: readonly ModelStreamEvent[]): LanguageModel {
   return {

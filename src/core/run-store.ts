@@ -1,4 +1,4 @@
-import type { AgentRunState } from "./agent";
+import type { AgentRunState } from "./agent.js";
 
 export interface AgentRunStore {
   save(state: AgentRunState): Promise<void>;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { Agent, defineTool } from "../index";
-import type { AgentEvent, AgentRunState, LanguageModel, ModelStreamEvent } from "../index";
+import { Agent, defineTool } from "../index.js";
+import type { AgentEvent, AgentRunState, LanguageModel, ModelStreamEvent } from "../index.js";
 import { z } from "zod";
 
 async function collect(stream: AsyncIterable<AgentEvent>) {

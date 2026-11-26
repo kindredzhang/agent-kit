@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./types";
+import type { AgentMessage } from "./types.js";
 
 export interface SessionStore {
   load(sessionId: string): Promise<readonly AgentMessage[]>;

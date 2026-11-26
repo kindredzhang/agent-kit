@@ -1,5 +1,5 @@
-import OpenAI from "openai";
-import { parseJsonObject, stringifyJson } from "../../core/json";
+import type OpenAI from "openai";
+import { parseJsonObject, stringifyJson } from "../../core/json.js";
 import type {
   AgentMessage,
   AgentToolCall,
@@ -7,8 +7,8 @@ import type {
   ModelRequest,
   ModelStreamEvent,
   ToolDefinition,
-} from "../../core/types";
-import { mapOpenAIFinishReason } from "./shared";
+} from "../../core/types.js";
+import { mapOpenAIFinishReason } from "./shared.js";
 
 export interface OpenAIChatCompletionsModelOptions {
   client: OpenAI;

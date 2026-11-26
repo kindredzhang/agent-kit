@@ -5,7 +5,8 @@ AgentKit 是一个使用 TypeScript 和 Bun 编写的轻量 Agent 框架起点�
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { Agent, AnthropicMessagesModel, defineTool } from "./index";
+import { Agent, defineTool } from "agent-kit";
+import { AnthropicMessagesModel } from "agent-kit/anthropic";
 
 const getWeather = defineTool({
   name: "get_weather",
@@ -46,7 +47,8 @@ Agent run 的终态由 `stopReason` 描述：`agent.completed` 表示正常完�
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
 import { Database } from "bun:sqlite";
-import { Agent, AnthropicMessagesModel, SQLiteSessionStore } from "./index";
+import { Agent, SQLiteSessionStore } from "agent-kit";
+import { AnthropicMessagesModel } from "agent-kit/anthropic";
 
 const database = new Database("agentkit.sqlite");
 const sessionStore = new SQLiteSessionStore(database);
@@ -96,7 +98,7 @@ bun run examples            # 或 bun run examples approval
 "暂停 → 落库 → 另一个进程批准 → 恢复"这段样板由 `AgentApprovalQueue` 承担：
 
 ```ts
-import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore } from "./index";
+import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore } from "agent-kit";
 
 const approvals = new AgentApprovalQueue({ store: new SQLiteApprovalStore(database) });
 const agent = new Agent({ model, tools, approvalMode: "pause", runStore: new SQLiteRunStore(database) });
@@ -128,7 +130,7 @@ for await (const event of approvals.resume(agent, runId)) {
 
 ```ts
 import { Database } from "bun:sqlite";
-import { Agent, SQLiteRunStore } from "./index";
+import { Agent, SQLiteRunStore } from "agent-kit";
 
 const database = new Database("agentkit.sqlite");
 const runStore = new SQLiteRunStore(database);
@@ -258,7 +260,7 @@ for await (const event of agent.stream({
 为每次 `agent.stream()` 或 `agent.resume()` 创建一个 `AgentTraceCollector`，并将事件传给 `record()`。`finish()` 返回可序列化的追踪记录，宿主可以写入自己的日志或遥测系统。追踪层级为 run → turn → 模型调用与工具执行，同时记录审批、上下文压缩、用量和运行结果。
 
 ```ts
-import { AgentTraceCollector, evaluateToolTrajectory } from "./index";
+import { AgentTraceCollector, evaluateToolTrajectory } from "agent-kit";
 
 const collector = new AgentTraceCollector();
 for await (const event of agent.stream({
@@ -281,7 +283,7 @@ if (trace) {
 `evaluateAgentCases()` 在一条公开接缝上批量运行用例，并同时断言 **run 是否按预期结束、工具轨迹、最终文本与结构化结果**，而不只是工具调用顺序：
 
 ```ts
-import { evaluateAgentCases, observeAgentEvents } from "./index";
+import { evaluateAgentCases, observeAgentEvents } from "agent-kit";
 
 const report = await evaluateAgentCases(
   [
@@ -328,7 +330,8 @@ if (!report.passed) {
 ```ts
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Agent, AnthropicMessagesModel, createMCPToolSource } from "./index";
+import { Agent, createMCPToolSource } from "agent-kit";
+import { AnthropicMessagesModel } from "agent-kit/anthropic";
 
 const client = new Client({ name: "my-host", version: "1.0.0" });
 await client.connect(new StdioClientTransport({ command: "my-mcp-server" }));
@@ -376,7 +379,8 @@ for await (const event of agent.stream({
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
-import { Agent, AnthropicMessagesModel, createSubagentTool } from "./index";
+import { Agent, createSubagentTool } from "agent-kit";
+import { AnthropicMessagesModel } from "agent-kit/anthropic";
 
 const model = new AnthropicMessagesModel({ client: new Anthropic(), model: "claude-sonnet-5-5" });
 const researcher = createSubagentTool({
@@ -403,8 +407,25 @@ const agent = new Agent({ model, tools: [researcher], maxTurns: 10 });
 
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
-安装依赖：
+适配器放在子路径导出里，核心入口不引用任何厂商 SDK：
+
+```ts
+import { OpenAIChatCompletionsModel, OpenAIResponsesModel } from "agent-kit/openai";
+import { AnthropicMessagesModel } from "agent-kit/anthropic";
+```
+
+### 安装与构建
 
 ```sh
-bun install
+bun add agent-kit
 ```
+
+`zod` 是唯一的运行时依赖。`openai` 与 `@anthropic-ai/sdk` 声明为可选 peer dependency，只有 import `agent-kit/openai` 或 `agent-kit/anthropic` 时才需要安装。SQLite 存储类接受任何满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时——在 Node 里可以传入 `node:sqlite` 或其他兼容实现的包装。
+
+发布产物由 `tsc` 生成，保留模块结构：
+
+```sh
+bun run build      # dist/**/*.js + dist/**/*.d.ts
+```
+
+源码内部使用带 `.js` 后缀的相对导入，因此声明文件在 `moduleResolution: "nodenext"` 下也能解析。构建只包含 `src/`，测试与示例不进入产物。

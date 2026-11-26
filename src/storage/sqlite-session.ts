@@ -1,10 +1,10 @@
-import { Database } from "bun:sqlite";
-import { assertSessionId } from "../core/session";
-import type { SessionStore } from "../core/session";
-import type { AgentMessage } from "../core/types";
+import { assertSessionId } from "../core/session.js";
+import type { SessionStore } from "../core/session.js";
+import type { AgentMessage } from "../core/types.js";
+import type { SQLiteDatabase } from "./sqlite.js";
 
 export class SQLiteSessionStore implements SessionStore {
-  constructor(private readonly database: Database) {
+  constructor(private readonly database: SQLiteDatabase) {
     this.database.run(`
       CREATE TABLE IF NOT EXISTS agentkit_session_messages (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +20,7 @@ export class SQLiteSessionStore implements SessionStore {
 
   async load(sessionId: string): Promise<readonly AgentMessage[]> {
     assertSessionId(sessionId);
-    const rows = this.database.query<{ message_json: string }, [string]>(`
+    const rows = this.database.query<{ message_json: string }>(`
       SELECT message_json
       FROM agentkit_session_messages
       WHERE session_id = ?
@@ -33,7 +33,7 @@ export class SQLiteSessionStore implements SessionStore {
     assertSessionId(sessionId);
     if (messages.length === 0) return;
 
-    const insert = this.database.query<never, [string, string]>(`
+    const insert = this.database.query<never>(`
       INSERT INTO agentkit_session_messages (session_id, message_json)
       VALUES (?, ?)
     `);
@@ -47,7 +47,7 @@ export class SQLiteSessionStore implements SessionStore {
 
   async clear(sessionId: string): Promise<void> {
     assertSessionId(sessionId);
-    this.database.query<never, [string]>(`
+    this.database.query<never>(`
       DELETE FROM agentkit_session_messages
       WHERE session_id = ?
     `).run(sessionId);

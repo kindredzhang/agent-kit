@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent } from "../core/agent";
-import type { AgentEvent } from "../core/agent";
-import { defineTool } from "../core/tools";
-import type { AnyAgentTool } from "../core/tools";
-import type { JsonObject, LanguageModel, ModelRequest, ModelStreamEvent, TokenUsage } from "../core/types";
-import { createSubagentTool } from "./subagent";
+import { Agent } from "../core/agent.js";
+import type { AgentEvent } from "../core/agent.js";
+import { defineTool } from "../core/tools.js";
+import type { AnyAgentTool } from "../core/tools.js";
+import type { JsonObject, LanguageModel, ModelRequest, ModelStreamEvent, TokenUsage } from "../core/types.js";
+import { createSubagentTool } from "./subagent.js";
 
 function model(handler: (request: ModelRequest) => ModelStreamEvent[]): LanguageModel {
   return {

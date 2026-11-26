@@ -1,4 +1,4 @@
-import type { TokenUsage } from "./types";
+import type { TokenUsage } from "./types.js";
 
 export function combineUsage(current: TokenUsage | undefined, next: TokenUsage): TokenUsage {
   const usage: TokenUsage = {};

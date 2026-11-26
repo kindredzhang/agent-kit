@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { Agent, defineTool } from "../src/index";
-import { createExampleModel, describeSettings } from "./shared";
+import { Agent, defineTool } from "../src/index.js";
+import { createExampleModel, describeSettings } from "./shared.js";
 
 const lookupOrder = defineTool({
   name: "lookup_order",

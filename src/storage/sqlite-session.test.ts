@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
-import { SQLiteSessionStore } from "./sqlite-session";
-import type { AgentMessage } from "../core/types";
+import { SQLiteSessionStore } from "./sqlite-session.js";
+import type { AgentMessage } from "../core/types.js";
 
 test("persists isolated session histories across database connections", async () => {
   const directory = await mkdtemp(join(tmpdir(), "agent-kit-session-"));

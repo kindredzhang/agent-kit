@@ -1,7 +1,7 @@
-import type { AgentEvent, AgentStopReason } from "./agent";
-import type { AgentBudgetSnapshot } from "./budget";
-import type { FinishReason, JsonObject, JsonValue, ModelProvider, TokenUsage } from "./types";
-import { combineUsage } from "./usage";
+import type { AgentEvent, AgentStopReason } from "./agent.js";
+import type { AgentBudgetSnapshot } from "./budget.js";
+import type { FinishReason, JsonObject, JsonValue, ModelProvider, TokenUsage } from "./types.js";
+import { combineUsage } from "./usage.js";
 
 interface TraceTiming {
   startedAt: number;

@@ -144,6 +144,16 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `decide()` 拒绝重复决定与未知请求，`resume(agent, runId)` 把已记录的决定喂回 `agent.resume`。鉴权、原子认领与并发去重仍归宿主。
 - 与 [OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/) 的 `RunState` 一样，队列本身不认证、不保证 exactly-once。
 
+### 阶段 9：可发布形态（已完成）
+
+包从「私有源码仓库」变成可安装的 ESM 包。
+
+- `package.json` 补全 `version`、`license`、`repository`、`files`、`exports` 与 `prepublishOnly`。`zod` 是唯一的运行时依赖。
+- `openai` 与 `@anthropic-ai/sdk` 在源码里只做类型用，因此移入可选 `peerDependencies`。适配器移出核心入口，改由 `agent-kit/openai` 与 `agent-kit/anthropic` 子路径导出——只用核心 API 的宿主不再需要安装任何厂商 SDK。
+- SQLite 存储不再 import `bun:sqlite`，改为接受结构化 `SQLiteDatabase` / `SQLiteStatement` 接口。`bun:sqlite` 的 `Database` 天然满足该接口，`dist/**/*.d.ts` 因而不泄漏 Bun 类型。
+- 源码相对导入统一带 `.js` 后缀，声明文件在 `moduleResolution: "nodenext"` 下可解析；构建改用 `tsc`（`tsconfig.build.json`）保结构输出，产物同时供 Node ESM 与 Bun 使用。
+- `src/package.test.ts` 把上述约定固定成测试：出口形状、依赖面、核心声明不含厂商 SDK 与 `bun:sqlite`、声明文件相对导入带扩展名。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

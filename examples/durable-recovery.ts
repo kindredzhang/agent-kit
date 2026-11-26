@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { z } from "zod";
-import { Agent, SQLiteRunStore, defineTool } from "../src/index";
-import { createExampleModel, describeSettings } from "./shared";
+import { Agent, SQLiteRunStore, defineTool } from "../src/index.js";
+import { createExampleModel, describeSettings } from "./shared.js";
 
 const charges: { amount: number; idempotencyKey: string }[] = [];
 

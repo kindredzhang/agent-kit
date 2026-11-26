@@ -1,6 +1,6 @@
-import type { AgentEvent, AgentStopReason } from "./agent";
-import type { ToolTrajectoryStep } from "./evaluation";
-import type { JsonValue, TokenUsage } from "./types";
+import type { AgentEvent, AgentStopReason } from "./agent.js";
+import type { ToolTrajectoryStep } from "./evaluation.js";
+import type { JsonValue, TokenUsage } from "./types.js";
 
 export interface AgentEvalObservation {
   stopReason: AgentStopReason;
