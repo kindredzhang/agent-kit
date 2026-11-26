@@ -429,3 +429,16 @@ bun run build      # dist/**/*.js + dist/**/*.d.ts
 ```
 
 源码内部使用带 `.js` 后缀的相对导入，因此声明文件在 `moduleResolution: "nodenext"` 下也能解析。构建只包含 `src/`，测试与示例不进入产物。
+
+产物本身的验收用 `verify-package`，它打包 tarball、装进一个干净的消费者项目，再分别检查：
+
+```sh
+bun run verify-package
+```
+
+- tarball 只含 `dist/`、README、LICENSE、GLOSSARY，不含源码、测试或示例
+- 三个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic` 都能被 Node 直接 import
+- 消费者项目不会自动装上 `openai` / `@anthropic-ai/sdk`
+- 消费者在 `moduleResolution: "nodenext"` 下只用核心 API 即可通过类型检查
+
+CI 在 GitHub Actions 上跑同样的四件事：`typecheck`、`bun test`、`verify-package`。`examples` job 只在推送 `main` 且仓库变量 `AGENTKIT_LIVE_EXAMPLES` 为 `true` 时运行，需要 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`AGENTKIT_MODEL` 三个 secrets。job 级 `if` 不能读取 `secrets`，所以开关放在仓库变量上；变量打开但 secret 缺失时该 job 会直接报错，而不是静默跳过。

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+
+  package:
+    name: Build and verify the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bun run verify-package
+
+  examples:
+    name: Examples against a live endpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ vars.AGENTKIT_LIVE_EXAMPLES == 'true' && github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Check the endpoint secrets
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENTKIT_MODEL: ${{ secrets.AGENTKIT_MODEL }}
+        run: |
+          missing=""
+          [ -n "$OPENAI_BASE_URL" ] || missing="$missing OPENAI_BASE_URL"
+          [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
+          [ -n "$AGENTKIT_MODEL" ] || missing="$missing AGENTKIT_MODEL"
+          if [ -n "$missing" ]; then
+            echo "::error::Repository variable AGENTKIT_LIVE_EXAMPLES is true, but these secrets are not set:$missing"
+            exit 1
+          fi
+      - run: bun run examples
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENTKIT_MODEL: ${{ secrets.AGENTKIT_MODEL }}

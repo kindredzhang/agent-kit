@@ -32,8 +32,9 @@
     "test": "bun test",
     "typecheck": "bun run tsc --noEmit",
     "build": "rm -rf dist && bunx tsc -p tsconfig.build.json",
+    "verify-package": "bun run build && bun run scripts/verify-package.ts",
     "examples": "bun run examples/run-all.ts",
-    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+    "prepublishOnly": "bun run typecheck && bun test && bun run verify-package"
   },
   "dependencies": {
     "zod": "^4.6.7"

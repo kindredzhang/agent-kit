@@ -154,6 +154,15 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 源码相对导入统一带 `.js` 后缀，声明文件在 `moduleResolution: "nodenext"` 下可解析；构建改用 `tsc`（`tsconfig.build.json`）保结构输出，产物同时供 Node ESM 与 Bun 使用。
 - `src/package.test.ts` 把上述约定固定成测试：出口形状、依赖面、核心声明不含厂商 SDK 与 `bun:sqlite`、声明文件相对导入带扩展名。
 
+### 阶段 10：持续集成（已完成）
+
+此前所有检查都靠本地手动运行，改动是否破坏发布形态没有第三方见证。
+
+- `.github/workflows/ci.yml` 分四个 job：`typecheck`、`test`、`package`、`examples`。前三个在每次 push 到 `main` 和每个 PR 上运行；`examples` 只在 push 且仓库变量 `AGENTKIT_LIVE_EXAMPLES` 为 `true` 时运行。
+- `scripts/verify-package.ts` 把阶段 9 的消费者验收固化成脚本：`npm pack` 出 tarball，装进干净的临时项目，再检查 tarball 内容、Node 能否加载三个入口、可选 peer 是否被误装、以及消费者在 `moduleResolution: "nodenext"` 下只用核心 API 能否通过类型检查。CI 里执行它的是 `package` job，本地等价命令是 `bun run verify-package`。
+- 该脚本做过反向验证：在消费者里 import `agent-kit/openai` 且不装 SDK 时，`tsc` 如期报 `TS2307`——说明「核心类型可解析」的检查不是空转。
+- `examples` job 的开关放在仓库变量而不是 secret 上，因为 GitHub Actions 的 job 级 `if` 只允许 `github`、`needs`、`vars`、`inputs` 四个上下文，`secrets` 在其中不可用（[context availability](https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability)）。开关打开但三个 secret 缺任何一个时，该 job 显式失败，避免「看着绿其实没跑」。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

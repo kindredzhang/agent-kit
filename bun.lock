@@ -5,18 +5,24 @@
     "": {
       "name": "agent-kit",
       "dependencies": {
-        "@anthropic-ai/sdk": "^1.13.0",
-        "openai": "^7.63.0",
         "zod": "^4.6.7",
       },
       "devDependencies": {
+        "@anthropic-ai/sdk": "^1.13.0",
         "@modelcontextprotocol/client": "^2.4.0",
         "@modelcontextprotocol/server": "^2.4.0",
         "@types/bun": "latest",
+        "openai": "^7.63.0",
+        "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "typescript": "^5",
+        "@anthropic-ai/sdk": ">=0.30",
+        "openai": ">=4",
       },
+      "optionalPeers": [
+        "@anthropic-ai/sdk",
+        "openai",
+      ],
     },
   },
   "packages": {
