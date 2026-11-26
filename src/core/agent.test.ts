@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Agent } from "./agent";
-import type { AgentEvent } from "./agent";
+import type { AgentEvent, AgentRunState } from "./agent";
 import { InMemorySessionStore } from "./session";
 import type { SessionStore } from "./session";
 import { defineTool } from "./tools";
@@ -612,6 +612,244 @@ test("reports session store read and write errors as run failures", async () => 
       error: { message: expectedMessage },
     });
   }
+});
+
+test("pauses for approval and resumes the same serialized run state", async () => {
+  let responseIndex = 0;
+  let executions = 0;
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream(_request: ModelRequest) {
+      if (responseIndex++ === 0) {
+        yield { type: "tool.call.completed", toolCall: { id: "call_1", name: "update_record", input: { id: "record-1" } } };
+        yield { type: "usage", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } };
+        yield { type: "finish", finishReason: "tool_calls" };
+        return;
+      }
+
+      yield { type: "text.delta", delta: "The record is updated." };
+      yield { type: "usage", usage: { inputTokens: 5, outputTokens: 4, totalTokens: 9 } };
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+  const updateRecord = defineTool({
+    name: "update_record",
+    description: "Update a record.",
+    input: z.object({ id: z.string() }),
+    execute: ({ id }) => {
+      executions += 1;
+      return { updated: id };
+    },
+  });
+  const sessionStore = new InMemorySessionStore();
+  const agent = new Agent({
+    model,
+    instructions: "Update records only with approval.",
+    tools: [updateRecord],
+    sessionStore,
+    approvalMode: "pause",
+  });
+  const pausedEvents: AgentEvent[] = [];
+
+  for await (const event of agent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Update record-1." }],
+  })) {
+    pausedEvents.push(event);
+  }
+
+  const paused = pausedEvents.at(-1);
+  expect(paused?.type).toBe("agent.paused");
+  expect(await sessionStore.load("conversation-1")).toEqual([]);
+  if (paused?.type !== "agent.paused") throw new Error("Expected an approval pause.");
+  const runId = paused.runId;
+  const state = JSON.parse(JSON.stringify(paused.runState)) as AgentRunState;
+  expect(state.pendingApproval?.toolCallId).toBe("call_1");
+
+  const resumedEvents: AgentEvent[] = [];
+  for await (const event of agent.resume({
+    state,
+    approval: { toolCallId: "call_1", decision: "approved" },
+  })) {
+    resumedEvents.push(event);
+  }
+
+  expect(resumedEvents[0]).toMatchObject({ type: "agent.resumed", runId });
+  expect(resumedEvents).toContainEqual(
+    expect.objectContaining({ type: "tool.approval.resolved", toolCallId: "call_1", decision: "approved" }),
+  );
+  expect(resumedEvents.at(-1)).toMatchObject({
+    type: "agent.completed",
+    runId,
+    usage: { inputTokens: 9, outputTokens: 6, totalTokens: 15 },
+  });
+  expect(executions).toBe(1);
+  expect(responseIndex).toBe(2);
+  expect(await sessionStore.load("conversation-1")).toMatchObject([
+    { role: "user", content: "Update record-1." },
+    { role: "assistant", toolCalls: [{ id: "call_1", name: "update_record" }] },
+    { role: "tool", toolCallId: "call_1", content: { updated: "record-1" } },
+    { role: "assistant", content: "The record is updated." },
+  ]);
+});
+
+test("rejects a paused run when its Session history has changed", async () => {
+  const sessionStore = new InMemorySessionStore();
+  await sessionStore.append("conversation-1", [{ role: "user", content: "Prior question." }]);
+  let executions = 0;
+  const model = createModel([
+    { type: "tool.call.completed", toolCall: { id: "call_1", name: "update_record", input: {} } },
+    { type: "finish", finishReason: "tool_calls" },
+  ]);
+  const updateRecord = defineTool({
+    name: "update_record",
+    description: "Update a record.",
+    input: z.object({}),
+    execute: () => {
+      executions += 1;
+      return { updated: true };
+    },
+  });
+  const agent = new Agent({ model, tools: [updateRecord], sessionStore, approvalMode: "pause" });
+  let pausedState: AgentRunState | undefined;
+
+  for await (const event of agent.stream({
+    sessionId: "conversation-1",
+    messages: [{ role: "user", content: "Update the record." }],
+  })) {
+    if (event.type === "agent.paused") pausedState = event.runState;
+  }
+  expect(pausedState).toBeDefined();
+  await sessionStore.append("conversation-1", [{ role: "user", content: "A separate run changed history." }]);
+
+  const resumedEvents: AgentEvent[] = [];
+  for await (const event of agent.resume({
+    state: pausedState!,
+    approval: { toolCallId: "call_1", decision: "approved" },
+  })) {
+    resumedEvents.push(event);
+  }
+
+  expect(resumedEvents.at(-1)).toMatchObject({
+    type: "agent.failed",
+    error: { message: "Session history changed while the Agent run was paused." },
+  });
+  expect(executions).toBe(0);
+});
+
+test("resumes a max-turn stop after increasing the turn budget", async () => {
+  const model = createModelSequence([
+    [
+      { type: "tool.call.completed", toolCall: { id: "call_1", name: "update_record", input: {} } },
+      { type: "finish", finishReason: "tool_calls" },
+    ],
+    [
+      { type: "text.delta", delta: "The record is updated." },
+      { type: "finish", finishReason: "stop" },
+    ],
+  ]);
+  let executions = 0;
+  const updateRecord = defineTool({
+    name: "update_record",
+    description: "Update a record.",
+    input: z.object({}),
+    execute: () => {
+      executions += 1;
+      return { updated: true };
+    },
+  });
+  const initialAgent = new Agent({ model, tools: [updateRecord], maxTurns: 1, approvalMode: "pause" });
+  const stoppedEvents: AgentEvent[] = [];
+  for await (const event of initialAgent.stream({ messages: [{ role: "user", content: "Update the record." }] })) {
+    stoppedEvents.push(event);
+  }
+  const stopped = stoppedEvents.at(-1);
+  expect(stopped).toMatchObject({ type: "agent.stopped", stopReason: "max_turns" });
+  if (stopped?.type !== "agent.stopped" || !stopped.runState) throw new Error("Expected a resumable turn limit stop.");
+
+  const resumedAgent = new Agent({ model, tools: [updateRecord], maxTurns: 2, approvalMode: "pause" });
+  const pausedEvents: AgentEvent[] = [];
+  for await (const event of resumedAgent.resume({ state: stopped.runState })) {
+    pausedEvents.push(event);
+  }
+  const paused = pausedEvents.at(-1);
+  expect(paused?.type).toBe("agent.paused");
+  if (paused?.type !== "agent.paused") throw new Error("Expected approval before execution.");
+
+  const finalEvents: AgentEvent[] = [];
+  for await (const event of resumedAgent.resume({
+    state: paused.runState,
+    approval: { toolCallId: "call_1", decision: "approved" },
+  })) {
+    finalEvents.push(event);
+  }
+
+  expect(finalEvents.at(-1)).toMatchObject({ type: "agent.completed", runId: stopped.runId });
+  expect(executions).toBe(1);
+});
+
+test("collects approval decisions across pauses before executing a tool batch", async () => {
+  const model = createModelSequence([
+    [
+      { type: "tool.call.completed", toolCall: { id: "call_1", name: "update_record", input: { id: "record-1" } } },
+      { type: "tool.call.completed", toolCall: { id: "call_2", name: "update_record", input: { id: "record-2" } } },
+      { type: "finish", finishReason: "tool_calls" },
+    ],
+    [
+      { type: "text.delta", delta: "The first record is updated." },
+      { type: "finish", finishReason: "stop" },
+    ],
+  ]);
+  const executedIds: string[] = [];
+  const updateRecord = defineTool({
+    name: "update_record",
+    description: "Update a record.",
+    input: z.object({ id: z.string() }),
+    execute: ({ id }) => {
+      executedIds.push(id);
+      return { updated: id };
+    },
+  });
+  const agent = new Agent({ model, tools: [updateRecord], approvalMode: "pause" });
+  const firstEvents: AgentEvent[] = [];
+  for await (const event of agent.stream({ messages: [{ role: "user", content: "Update two records." }] })) {
+    firstEvents.push(event);
+  }
+  const firstPause = firstEvents.at(-1);
+  expect(firstPause?.type).toBe("agent.paused");
+  if (firstPause?.type !== "agent.paused") throw new Error("Expected the first approval pause.");
+
+  const secondEvents: AgentEvent[] = [];
+  for await (const event of agent.resume({
+    state: firstPause.runState,
+    approval: { toolCallId: "call_1", decision: "approved" },
+  })) {
+    secondEvents.push(event);
+  }
+  const secondPause = secondEvents.at(-1);
+  expect(secondPause?.type).toBe("agent.paused");
+  expect(secondEvents).toContainEqual(
+    expect.objectContaining({ type: "tool.approval.resolved", toolCallId: "call_1", decision: "approved" }),
+  );
+  if (secondPause?.type !== "agent.paused") throw new Error("Expected the second approval pause.");
+  expect(secondPause.runState.approvalDecisions).toMatchObject([
+    { toolCallId: "call_1", decision: "approved", resolved: true },
+  ]);
+
+  const finalEvents: AgentEvent[] = [];
+  for await (const event of agent.resume({
+    state: secondPause.runState,
+    approval: { toolCallId: "call_2", decision: "rejected" },
+  })) {
+    finalEvents.push(event);
+  }
+
+  expect(finalEvents.some((event) => event.type === "tool.approval.resolved" && event.toolCallId === "call_1")).toBe(false);
+  expect(finalEvents).toContainEqual(
+    expect.objectContaining({ type: "tool.approval.resolved", toolCallId: "call_2", decision: "rejected" }),
+  );
+  expect(finalEvents.at(-1)).toMatchObject({ type: "agent.completed" });
+  expect(executedIds).toEqual(["record-1"]);
 });
 
 test("does not persist run-local context compaction over session history", async () => {

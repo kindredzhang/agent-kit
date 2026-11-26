@@ -32,6 +32,10 @@ _Avoid_: Agent run
 A conversation history that can be continued across multiple Agent runs.
 _Avoid_: Agent run
 
+**Agent run state**:
+A snapshot of an unfinished Agent run that can continue from a supported pause point.
+_Avoid_: Session
+
 **Tool**:
 A named capability that an Agent can make available to a language model for execution.
 _Avoid_: Function, plugin

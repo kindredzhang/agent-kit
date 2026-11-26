@@ -12,7 +12,43 @@ import type {
   LanguageModel,
   ModelProvider,
   TokenUsage,
+  ToolDefinition,
 } from "./types";
+
+export interface AgentRunState {
+  version: 1;
+  runId: string;
+  provider: ModelProvider;
+  instructions?: string;
+  approvalMode: "callback" | "pause";
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
+  usesCustomContextEstimator: boolean;
+  toolDefinitions: readonly ToolDefinition[];
+  toolApprovalPolicies: readonly { toolName: string; requiresApproval: boolean }[];
+  sessionId?: string;
+  sessionHistory: readonly AgentMessage[];
+  messages: readonly AgentMessage[];
+  messagesToAppend: readonly AgentMessage[];
+  turn: number;
+  pendingToolCalls: readonly AgentToolCall[];
+  finishReason: FinishReason;
+  responseId?: string;
+  usage?: TokenUsage;
+  approvalDecisions: readonly {
+    toolCallId: string;
+    approvalId: string;
+    decision: "approved" | "rejected";
+    resolved: boolean;
+  }[];
+  pendingApproval?: { toolCallId: string; approvalId: string };
+}
+
+export interface AgentResumeInput {
+  state: AgentRunState;
+  approval?: { toolCallId: string; decision: "approved" | "rejected" };
+  signal?: AbortSignal;
+}
 
 export type MessageDelta =
   | { type: "text"; text: string }
@@ -30,6 +66,8 @@ export type AgentStopReason =
 
 export type AgentEvent =
   | { type: "agent.started"; runId: string; provider: ModelProvider }
+  | { type: "agent.resumed"; runId: string; provider: ModelProvider }
+  | { type: "agent.paused"; runId: string; turn: number; pendingToolCall: AgentToolCall; runState: AgentRunState }
   | { type: "turn.started"; runId: string; turn: number }
   | {
       type: "agent.context.compacted";
@@ -86,6 +124,7 @@ export type AgentEvent =
       usage?: TokenUsage;
       responseId?: string;
       context?: { estimatedTokens: number; maxContextTokens: number };
+      runState?: AgentRunState;
     }
   | { type: "agent.failed"; runId: string; stopReason: "error"; error: Error; usage?: TokenUsage };
 
@@ -94,6 +133,7 @@ export interface AgentOptions {
   instructions?: string;
   tools?: readonly AnyAgentTool[];
   approveTool?: ToolApprovalHandler;
+  approvalMode?: "callback" | "pause";
   maxOutputTokens?: number;
   maxTurns?: number;
   maxContextTokens?: number;
@@ -164,6 +204,14 @@ function canRunConcurrently(tool: AnyAgentTool): boolean {
   return tool.annotations?.readOnly === true && tool.annotations.destructive !== true;
 }
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
 export class Agent {
   private readonly toolsByName = new Map<string, AnyAgentTool>();
   private readonly maxTurns: number;
@@ -187,35 +235,114 @@ export class Agent {
   }
 
   async *stream(input: AgentRunInput): AsyncGenerator<AgentEvent> {
-    const runId = crypto.randomUUID();
-    const inputMessages = [...input.messages];
-    const sessionMessagesToAppend = [...inputMessages];
+    yield* this.executeRun(input);
+  }
+
+  async *resume(input: AgentResumeInput): AsyncGenerator<AgentEvent> {
+    if (!input || typeof input !== "object" || !input.state || typeof input.state !== "object") {
+      yield {
+        type: "agent.failed",
+        runId: crypto.randomUUID(),
+        stopReason: "error",
+        error: new TypeError("A valid Agent run state is required to resume a run."),
+      };
+      return;
+    }
+
+    yield* this.executeRun(
+      {
+        messages: [],
+        ...(input.state.sessionId !== undefined ? { sessionId: input.state.sessionId } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+      input.state,
+      input.approval,
+    );
+  }
+
+  private async *executeRun(
+    input: AgentRunInput,
+    restoredState?: AgentRunState,
+    approval?: AgentResumeInput["approval"],
+  ): AsyncGenerator<AgentEvent> {
+    const runId = restoredState?.runId ?? crypto.randomUUID();
+    const inputMessages = restoredState ? [] : [...input.messages];
+    const sessionMessagesToAppend: AgentMessage[] = restoredState ? [] : [...inputMessages];
     const messages: AgentMessage[] = [];
+    let sessionHistory: AgentMessage[] = [];
+    const sessionId = restoredState?.sessionId ?? input.sessionId;
     const sessionStore = this.options.sessionStore;
-    const tools = this.options.tools?.map(({ name, description, inputSchema, strict }) => ({
-      name,
-      description,
-      inputSchema,
-      ...(strict !== undefined ? { strict } : {}),
-    }));
+    const tools = this.toolDefinitions();
+    const approvalDecisions: AgentRunState["approvalDecisions"][number][] = [];
 
-    yield {
-      type: "agent.started",
-      runId,
-      provider: this.options.model.provider,
-    };
+    yield restoredState
+      ? { type: "agent.resumed", runId, provider: this.options.model.provider }
+      : { type: "agent.started", runId, provider: this.options.model.provider };
 
-    let totalUsage: TokenUsage | undefined;
+    let totalUsage: TokenUsage | undefined = restoredState?.usage;
 
     try {
-      if (input.sessionId !== undefined) {
-        assertSessionId(input.sessionId);
-        if (!sessionStore) throw new Error("A sessionStore must be configured when sessionId is provided.");
-        messages.push(...await sessionStore.load(input.sessionId));
-      }
-      messages.push(...inputMessages);
-      if (this.options.instructions !== undefined) {
-        messages.unshift({ role: "system", content: this.options.instructions });
+      if (restoredState) {
+        this.validateRunState(restoredState);
+        messages.push(...restoredState.messages);
+        sessionMessagesToAppend.push(...restoredState.messagesToAppend);
+        sessionHistory.push(...restoredState.sessionHistory);
+
+        if (sessionId !== undefined) {
+          assertSessionId(sessionId);
+          if (!sessionStore) throw new Error("A sessionStore must be configured when resuming this run.");
+          const currentHistory = await sessionStore.load(sessionId);
+          if (!sameJsonValue(currentHistory, restoredState.sessionHistory)) {
+            throw new Error("Session history changed while the Agent run was paused.");
+          }
+        }
+
+        if (restoredState.turn > this.maxTurns) {
+          const savedMessage = messages.at(-1);
+          if (savedMessage?.role !== "assistant") {
+            throw new Error("The saved Agent run state has no pending assistant tool call message.");
+          }
+          yield {
+            type: "agent.stopped",
+            runId,
+            stopReason: "max_turns",
+            message: savedMessage,
+            finishReason: restoredState.finishReason,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(restoredState.responseId ? { responseId: restoredState.responseId } : {}),
+            runState: structuredClone(restoredState),
+          };
+          return;
+        }
+
+        approvalDecisions.push(...restoredState.approvalDecisions.map((entry) => ({ ...entry })));
+        if (restoredState.pendingApproval) {
+          if (!approval || approval.toolCallId !== restoredState.pendingApproval.toolCallId ||
+            (approval.decision !== "approved" && approval.decision !== "rejected")) {
+            throw new Error("A matching approval decision is required to resume this run.");
+          }
+          if (approvalDecisions.some((entry) => entry.toolCallId === approval.toolCallId)) {
+            throw new Error("The pending tool call already has an approval decision.");
+          }
+          approvalDecisions.push({
+            ...restoredState.pendingApproval,
+            decision: approval.decision,
+            resolved: false,
+          });
+        } else if (approval) {
+          throw new Error("This run is not waiting for an approval decision.");
+        }
+      } else {
+        if (sessionId !== undefined) {
+          assertSessionId(sessionId);
+          if (!sessionStore) throw new Error("A sessionStore must be configured when sessionId is provided.");
+          sessionHistory = [...await sessionStore.load(sessionId)];
+          messages.push(...sessionHistory);
+        }
+        messages.push(...inputMessages);
+        if (this.options.instructions !== undefined) {
+          messages.unshift({ role: "system", content: this.options.instructions });
+        }
       }
 
       const contextManager = new ContextManager(
@@ -224,7 +351,7 @@ export class Agent {
         messages,
       );
 
-      for (let turn = 1; turn <= this.maxTurns; turn += 1) {
+      for (let turn = restoredState?.turn ?? 1; turn <= this.maxTurns; turn += 1) {
         if (input.signal?.aborted) {
           yield {
             type: "agent.stopped",
@@ -235,115 +362,133 @@ export class Agent {
           return;
         }
 
-        const context = contextManager.prepare(messages, tools);
-        if (context.removedTurnCount > 0) {
-          yield {
-            type: "agent.context.compacted",
-            runId,
-            turn,
-            estimatedTokensBefore: context.estimatedTokensBefore!,
-            estimatedTokensAfter: context.estimatedTokensAfter!,
-            removedTurnCount: context.removedTurnCount,
-          };
-        }
-        if (input.signal?.aborted) {
-          yield {
-            type: "agent.stopped",
-            runId,
-            stopReason: "cancelled",
-            ...(totalUsage ? { usage: totalUsage } : {}),
-          };
-          return;
-        }
+        const resumingTurn = restoredState !== undefined && turn === restoredState.turn;
+        const turnApprovalDecisions = resumingTurn ? approvalDecisions : [];
+        if (!resumingTurn) {
+          const context = contextManager.prepare(messages, tools);
+          if (context.removedTurnCount > 0) {
+            yield {
+              type: "agent.context.compacted",
+              runId,
+              turn,
+              estimatedTokensBefore: context.estimatedTokensBefore!,
+              estimatedTokensAfter: context.estimatedTokensAfter!,
+              removedTurnCount: context.removedTurnCount,
+            };
+          }
+          if (input.signal?.aborted) {
+            yield {
+              type: "agent.stopped",
+              runId,
+              stopReason: "cancelled",
+              ...(totalUsage ? { usage: totalUsage } : {}),
+            };
+            return;
+          }
 
-        if (context.contextLimit) {
-          yield {
-            type: "agent.stopped",
-            runId,
-            stopReason: "context_limit",
-            context: context.contextLimit,
-            ...(totalUsage ? { usage: totalUsage } : {}),
-          };
-          return;
-        }
-
-        const messageId = crypto.randomUUID();
-        let content = "";
-        let finishReason: FinishReason = "other";
-        let responseId: string | undefined;
-        const toolCalls: AgentToolCall[] = [];
-
-        yield { type: "turn.started", runId, turn };
-        yield { type: "message.started", runId, turn, messageId, role: "assistant" };
-
-        for await (const event of this.options.model.stream({
-          messages,
-          tools,
-          maxOutputTokens: this.options.maxOutputTokens,
-          signal: input.signal,
-        })) {
-          switch (event.type) {
-            case "text.delta":
-              content += event.delta;
-              yield {
-                type: "message.delta",
-                runId,
-                turn,
-                messageId,
-                delta: { type: "text", text: event.delta },
-              };
-              break;
-            case "reasoning.delta":
-              yield {
-                type: "message.delta",
-                runId,
-                turn,
-                messageId,
-                delta: { type: "reasoning", text: event.delta },
-              };
-              break;
-            case "refusal.delta":
-              content += event.delta;
-              yield {
-                type: "message.delta",
-                runId,
-                turn,
-                messageId,
-                delta: { type: "refusal", text: event.delta },
-              };
-              break;
-            case "tool.call.started":
-              yield { ...event, runId, turn };
-              break;
-            case "tool.call.arguments.delta":
-              yield { ...event, runId, turn };
-              break;
-            case "tool.call.completed":
-              toolCalls.push(event.toolCall);
-              yield { ...event, runId, turn };
-              break;
-            case "usage":
-              totalUsage = combineUsage(totalUsage, event.usage);
-              yield { ...event, runId, turn };
-              break;
-            case "finish":
-              finishReason = event.finishReason;
-              responseId = event.responseId;
-              break;
+          if (context.contextLimit) {
+            yield {
+              type: "agent.stopped",
+              runId,
+              stopReason: "context_limit",
+              context: context.contextLimit,
+              ...(totalUsage ? { usage: totalUsage } : {}),
+            };
+            return;
           }
         }
 
-        const message: Extract<AgentMessage, { role: "assistant" }> = {
-          id: messageId,
-          role: "assistant",
-          content,
-          ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        };
+        let message: Extract<AgentMessage, { role: "assistant" }>;
+        let finishReason: FinishReason;
+        let responseId: string | undefined;
+        let toolCalls: AgentToolCall[];
 
-        messages.push(message);
-        sessionMessagesToAppend.push(message);
-        yield { type: "message.completed", runId, turn, message };
-        yield { type: "turn.completed", runId, turn, finishReason };
+        if (resumingTurn) {
+          const savedMessage = messages.at(-1);
+          if (savedMessage?.role !== "assistant") {
+            throw new Error("The saved Agent run state has no pending assistant tool call message.");
+          }
+          message = savedMessage;
+          finishReason = restoredState.finishReason;
+          responseId = restoredState.responseId;
+          toolCalls = [...restoredState.pendingToolCalls];
+        } else {
+          const messageId = crypto.randomUUID();
+          let content = "";
+          finishReason = "other";
+          toolCalls = [];
+
+          yield { type: "turn.started", runId, turn };
+          yield { type: "message.started", runId, turn, messageId, role: "assistant" };
+
+          for await (const event of this.options.model.stream({
+            messages,
+            tools,
+            maxOutputTokens: this.options.maxOutputTokens,
+            signal: input.signal,
+          })) {
+            switch (event.type) {
+              case "text.delta":
+                content += event.delta;
+                yield {
+                  type: "message.delta",
+                  runId,
+                  turn,
+                  messageId,
+                  delta: { type: "text", text: event.delta },
+                };
+                break;
+              case "reasoning.delta":
+                yield {
+                  type: "message.delta",
+                  runId,
+                  turn,
+                  messageId,
+                  delta: { type: "reasoning", text: event.delta },
+                };
+                break;
+              case "refusal.delta":
+                content += event.delta;
+                yield {
+                  type: "message.delta",
+                  runId,
+                  turn,
+                  messageId,
+                  delta: { type: "refusal", text: event.delta },
+                };
+                break;
+              case "tool.call.started":
+                yield { ...event, runId, turn };
+                break;
+              case "tool.call.arguments.delta":
+                yield { ...event, runId, turn };
+                break;
+              case "tool.call.completed":
+                toolCalls.push(event.toolCall);
+                yield { ...event, runId, turn };
+                break;
+              case "usage":
+                totalUsage = combineUsage(totalUsage, event.usage);
+                yield { ...event, runId, turn };
+                break;
+              case "finish":
+                finishReason = event.finishReason;
+                responseId = event.responseId;
+                break;
+            }
+          }
+
+          message = {
+            id: messageId,
+            role: "assistant",
+            content,
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          };
+          messages.push(message);
+          sessionMessagesToAppend.push(message);
+          yield { type: "message.completed", runId, turn, message };
+          yield { type: "turn.completed", runId, turn, finishReason };
+        }
 
         if (input.signal?.aborted) {
           yield {
@@ -372,8 +517,8 @@ export class Agent {
         }
 
         if (finishReason === "refusal" || toolCalls.length === 0) {
-          if (input.sessionId !== undefined && sessionStore) {
-            await sessionStore.append(input.sessionId, sessionMessagesToAppend);
+          if (sessionId !== undefined && sessionStore) {
+            await sessionStore.append(sessionId, sessionMessagesToAppend);
           }
           yield {
             type: "agent.completed",
@@ -388,6 +533,19 @@ export class Agent {
         }
 
         if (turn === this.maxTurns) {
+          const runState = this.createRunState({
+            runId,
+            sessionId,
+            sessionHistory,
+            messages,
+            messagesToAppend: sessionMessagesToAppend,
+            turn,
+            pendingToolCalls: toolCalls,
+            finishReason,
+            responseId,
+            usage: totalUsage,
+            approvalDecisions: turnApprovalDecisions,
+          });
           yield {
             type: "agent.stopped",
             runId,
@@ -396,6 +554,7 @@ export class Agent {
             finishReason,
             ...(totalUsage ? { usage: totalUsage } : {}),
             ...(responseId ? { responseId } : {}),
+            runState,
           };
           return;
         }
@@ -423,103 +582,146 @@ export class Agent {
           }
 
           if (requiresApproval(tool)) {
-            const approvalId = crypto.randomUUID();
-            const approvalTool = {
-              name: tool.name,
-              description: tool.description,
-              ...(tool.annotations ? { annotations: tool.annotations } : {}),
-            };
-            const request = {
-              approvalId,
-              runId,
-              turn,
-              toolCall,
-              input: parsedInput,
-              tool: approvalTool,
-              ...(input.signal ? { signal: input.signal } : {}),
-            };
-
-            yield {
-              type: "tool.approval.requested",
-              runId,
-              turn,
-              approvalId,
-              toolCall,
-              input: parsedInput,
-              tool: approvalTool,
-            };
-
-            if (input.signal?.aborted) {
-              yield {
-                type: "tool.approval.resolved",
+            const savedDecision = turnApprovalDecisions.find((entry) => entry.toolCallId === toolCall.id);
+            if (savedDecision) {
+              if (!savedDecision.resolved) {
+                yield {
+                  type: "tool.approval.resolved",
+                  runId,
+                  turn,
+                  approvalId: savedDecision.approvalId,
+                  toolCallId: toolCall.id,
+                  decision: savedDecision.decision,
+                  ...(savedDecision.decision === "rejected" ? { reason: "rejected" as const } : {}),
+                };
+                savedDecision.resolved = true;
+              }
+              if (savedDecision.decision === "rejected") {
+                outcomes[index] = failedOutcome(
+                  toolCall,
+                  new Error("Tool call was rejected by the approval handler."),
+                );
+                continue;
+              }
+            } else {
+              const approvalId = crypto.randomUUID();
+              const approvalTool = {
+                name: tool.name,
+                description: tool.description,
+                ...(tool.annotations ? { annotations: tool.annotations } : {}),
+              };
+              const request = {
+                approvalId,
                 runId,
                 turn,
-                approvalId,
-                toolCallId: toolCall.id,
-                decision: "rejected",
-                reason: "cancelled",
-              };
-              yield {
-                type: "agent.stopped",
-                runId,
-                stopReason: "cancelled",
-                message,
-                finishReason,
-                ...(totalUsage ? { usage: totalUsage } : {}),
-                ...(responseId ? { responseId } : {}),
-              };
-              return;
-            }
-
-            if (!this.options.approveTool) {
-              yield {
-                type: "tool.approval.resolved",
-                runId,
-                turn,
-                approvalId,
-                toolCallId: toolCall.id,
-                decision: "rejected",
-                reason: "no_handler",
-              };
-              outcomes[index] = failedOutcome(
                 toolCall,
-                new Error("Tool call requires approval, but no approval handler is configured."),
-              );
-              continue;
-            }
+                input: parsedInput,
+                tool: approvalTool,
+                ...(input.signal ? { signal: input.signal } : {}),
+              };
 
-            let approved: boolean;
-            try {
-              approved = await this.options.approveTool(request);
-            } catch (error) {
+              yield {
+                type: "tool.approval.requested",
+                runId,
+                turn,
+                approvalId,
+                toolCall,
+                input: parsedInput,
+                tool: approvalTool,
+              };
+
+              if (input.signal?.aborted) {
+                yield {
+                  type: "tool.approval.resolved",
+                  runId,
+                  turn,
+                  approvalId,
+                  toolCallId: toolCall.id,
+                  decision: "rejected",
+                  reason: "cancelled",
+                };
+                yield {
+                  type: "agent.stopped",
+                  runId,
+                  stopReason: "cancelled",
+                  message,
+                  finishReason,
+                  ...(totalUsage ? { usage: totalUsage } : {}),
+                  ...(responseId ? { responseId } : {}),
+                };
+                return;
+              }
+
+              if (this.options.approvalMode === "pause") {
+                const pendingApproval = { toolCallId: toolCall.id, approvalId };
+                const runState = this.createRunState({
+                  runId,
+                  sessionId,
+                  sessionHistory,
+                  messages,
+                  messagesToAppend: sessionMessagesToAppend,
+                  turn,
+                  pendingToolCalls: toolCalls,
+                  finishReason,
+                  responseId,
+                  usage: totalUsage,
+                  approvalDecisions: turnApprovalDecisions,
+                  pendingApproval,
+                });
+                yield { type: "agent.paused", runId, turn, pendingToolCall: toolCall, runState };
+                return;
+              }
+
+              if (!this.options.approveTool) {
+                yield {
+                  type: "tool.approval.resolved",
+                  runId,
+                  turn,
+                  approvalId,
+                  toolCallId: toolCall.id,
+                  decision: "rejected",
+                  reason: "no_handler",
+                };
+                outcomes[index] = failedOutcome(
+                  toolCall,
+                  new Error("Tool call requires approval, but no approval handler is configured."),
+                );
+                continue;
+              }
+
+              let approved: boolean;
+              try {
+                approved = await this.options.approveTool(request);
+              } catch (error) {
+                yield {
+                  type: "tool.approval.resolved",
+                  runId,
+                  turn,
+                  approvalId,
+                  toolCallId: toolCall.id,
+                  decision: "rejected",
+                  reason: isAbortError(error, input.signal) ? "cancelled" : "handler_failed",
+                };
+                throw error;
+              }
+
               yield {
                 type: "tool.approval.resolved",
                 runId,
                 turn,
                 approvalId,
                 toolCallId: toolCall.id,
-                decision: "rejected",
-                reason: isAbortError(error, input.signal) ? "cancelled" : "handler_failed",
+                decision: approved ? "approved" : "rejected",
+                ...(!approved ? { reason: "rejected" as const } : {}),
               };
-              throw error;
-            }
 
-            yield {
-              type: "tool.approval.resolved",
-              runId,
-              turn,
-              approvalId,
-              toolCallId: toolCall.id,
-              decision: approved ? "approved" : "rejected",
-              ...(!approved ? { reason: "rejected" as const } : {}),
-            };
-
-            if (!approved) {
-              outcomes[index] = failedOutcome(
-                toolCall,
-                new Error("Tool call was rejected by the approval handler."),
-              );
-              continue;
+              if (!approved) {
+                outcomes[index] = failedOutcome(
+                  toolCall,
+                  new Error("Tool call was rejected by the approval handler."),
+                );
+                continue;
+              }
             }
           }
 
@@ -651,6 +853,119 @@ export class Agent {
         error: toError(error),
         ...(totalUsage ? { usage: totalUsage } : {}),
       };
+    }
+  }
+
+  private toolDefinitions(): ToolDefinition[] | undefined {
+    return this.options.tools?.map(({ name, description, inputSchema, strict }) => ({
+      name,
+      description,
+      inputSchema,
+      ...(strict !== undefined ? { strict } : {}),
+    }));
+  }
+
+  private toolApprovalPolicies(): AgentRunState["toolApprovalPolicies"] {
+    return [...this.toolsByName].map(([toolName, tool]) => ({
+      toolName,
+      requiresApproval: requiresApproval(tool),
+    }));
+  }
+
+  private createRunState(input: {
+    runId: string;
+    sessionId?: string;
+    sessionHistory: readonly AgentMessage[];
+    messages: readonly AgentMessage[];
+    messagesToAppend: readonly AgentMessage[];
+    turn: number;
+    pendingToolCalls: readonly AgentToolCall[];
+    finishReason: FinishReason;
+    responseId?: string;
+    usage?: TokenUsage;
+    approvalDecisions: readonly AgentRunState["approvalDecisions"][number][];
+    pendingApproval?: AgentRunState["pendingApproval"];
+  }): AgentRunState {
+    return structuredClone({
+      version: 1 as const,
+      runId: input.runId,
+      provider: this.options.model.provider,
+      ...(this.options.instructions !== undefined ? { instructions: this.options.instructions } : {}),
+      approvalMode: this.options.approvalMode ?? "callback",
+      ...(this.options.maxContextTokens !== undefined ? { maxContextTokens: this.options.maxContextTokens } : {}),
+      ...(this.options.maxOutputTokens !== undefined ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
+      usesCustomContextEstimator: this.options.estimateContextTokens !== undefined,
+      toolDefinitions: this.toolDefinitions() ?? [],
+      toolApprovalPolicies: this.toolApprovalPolicies(),
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+      sessionHistory: [...input.sessionHistory],
+      messages: [...input.messages],
+      messagesToAppend: [...input.messagesToAppend],
+      turn: input.turn,
+      pendingToolCalls: [...input.pendingToolCalls],
+      finishReason: input.finishReason,
+      ...(input.responseId !== undefined ? { responseId: input.responseId } : {}),
+      ...(input.usage ? { usage: input.usage } : {}),
+      approvalDecisions: input.approvalDecisions.map((entry) => ({ ...entry })),
+      ...(input.pendingApproval ? { pendingApproval: input.pendingApproval } : {}),
+    });
+  }
+
+  private validateRunState(state: AgentRunState): void {
+    if (!state || typeof state !== "object" || state.version !== 1) {
+      throw new TypeError("Unsupported or invalid Agent run state.");
+    }
+    if (typeof state.runId !== "string" || state.runId.length === 0 || state.provider !== this.options.model.provider) {
+      throw new Error("Agent run state does not match this model provider.");
+    }
+    if (state.instructions !== this.options.instructions ||
+      state.approvalMode !== (this.options.approvalMode ?? "callback") ||
+      state.maxContextTokens !== this.options.maxContextTokens ||
+      state.maxOutputTokens !== this.options.maxOutputTokens ||
+      state.usesCustomContextEstimator !== (this.options.estimateContextTokens !== undefined)) {
+      throw new Error("Agent run state does not match this Agent configuration.");
+    }
+    if (!sameJsonValue(state.toolDefinitions, this.toolDefinitions() ?? []) ||
+      !sameJsonValue(state.toolApprovalPolicies, this.toolApprovalPolicies())) {
+      throw new Error("Agent run state does not match the configured tools.");
+    }
+    if (!Number.isSafeInteger(state.turn) || state.turn < 1 || typeof state.finishReason !== "string" ||
+      state.finishReason === "length" || state.finishReason === "refusal" ||
+      !Array.isArray(state.sessionHistory) || !Array.isArray(state.messages) ||
+      !Array.isArray(state.messagesToAppend) || !Array.isArray(state.pendingToolCalls) ||
+      state.pendingToolCalls.length === 0 || !Array.isArray(state.approvalDecisions)) {
+      throw new TypeError("Agent run state is missing required continuation data.");
+    }
+    if (state.sessionId !== undefined) assertSessionId(state.sessionId);
+    if (state.sessionId === undefined && state.sessionHistory.length > 0) {
+      throw new TypeError("Agent run state has session history without a session id.");
+    }
+
+    const lastMessage = state.messages.at(-1);
+    if (lastMessage?.role !== "assistant" || !sameJsonValue(lastMessage.toolCalls, state.pendingToolCalls) ||
+      !sameJsonValue(state.messagesToAppend.at(-1), lastMessage)) {
+      throw new TypeError("Agent run state does not contain its pending assistant tool call message.");
+    }
+
+    const pendingToolCallIds = new Set(state.pendingToolCalls.map((toolCall) => toolCall.id));
+    const decisionIds = new Set<string>();
+    for (const entry of state.approvalDecisions) {
+      if (typeof entry.toolCallId !== "string" || !pendingToolCallIds.has(entry.toolCallId) ||
+        typeof entry.approvalId !== "string" || entry.approvalId.length === 0 ||
+        (entry.decision !== "approved" && entry.decision !== "rejected") || typeof entry.resolved !== "boolean" ||
+        decisionIds.has(entry.toolCallId)) {
+        throw new TypeError("Agent run state contains an invalid approval decision.");
+      }
+      decisionIds.add(entry.toolCallId);
+    }
+
+    if (state.pendingApproval) {
+      const toolCall = state.pendingToolCalls.find((entry) => entry.id === state.pendingApproval!.toolCallId);
+      const tool = toolCall ? this.toolsByName.get(toolCall.name) : undefined;
+      if (!tool || !requiresApproval(tool) || typeof state.pendingApproval.approvalId !== "string" ||
+        state.pendingApproval.approvalId.length === 0 || decisionIds.has(state.pendingApproval.toolCallId)) {
+        throw new TypeError("Agent run state contains an invalid pending approval.");
+      }
     }
   }
 

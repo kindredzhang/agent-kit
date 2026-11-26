@@ -15,14 +15,13 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 - Agent run 提供独立的停止原因和累计 usage，`AbortSignal` 已贯穿到 `ModelRequest` 与 `ToolExecutionContext`；
 - 可选的 run-local 上下文预算与确定性压缩：按需估算完整模型输入，移除较早的完整对话或工具交互，并以事件报告缩减；
 - `SessionStore` 支持内存与 SQLite 实现，可跨 run 加载和追加对话历史；
-- 完整事件流覆盖 run、model turn、消息、工具执行、审批与上下文压缩。
+- 完整事件流覆盖 run、model turn、消息、工具执行、审批与上下文压缩；`AgentRunState` 支持在审批暂停或 `max_turns` 停止时恢复同一 run。
 
-后续可对照的能力包括同一 run 的暂停与恢复、hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
+后续可对照的能力包括 hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
 
 仍待推进的核心能力：
 
-1. **同一 run 的暂停与恢复**。Session 保存已完成的对话，不保存中断 run 的待执行工具、审批决定或累计 usage；恢复同一个 run 需要独立的持久化状态模型。
-2. **追踪、评估与扩展集成**。需要先明确稳定的 run/turn/tool 事件如何映射到 span、如何做确定性的轨迹评估，再决定 MCP 与子代理的接入形态。
+1. **追踪、评估与扩展集成**。需要先明确稳定的 run/turn/tool 事件如何映射到 span、如何做确定性的轨迹评估，再决定 MCP 与子代理的接入形态。
 
 ---
 
@@ -56,7 +55,7 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 1. 这些产品普遍提供模型驱动的工具循环；LangGraph 则把显式状态图作为核心抽象，ADK 也提供顺序、循环和并行工作流。它们展示的是不同复杂度的控制流选项，不能据此断言某一种抽象适合所有场景。AgentKit 目前以单个循环为主，先把这个控制流的安全性、停止原因和可恢复性做好，再根据真实需求决定是否加图编排。
 2. **如果 AgentKit 要支持跨进程或稍后恢复的审批**，运行状态必须可序列化，恢复时需验证同一个 run/session 的身份与待审批调用。单进程内通过回调等待批准，则不必一开始就引入持久化快照。
-3. 持久化恢复不是事务：OpenAI 文档说明序列化的 `RunState` 本身不负责认证，且不保证 exactly-once；LangGraph 文档说明恢复时节点会从头执行，因此前置副作用要幂等。AgentKit 在加入可恢复审批时，应明确这些限制并避免自动重放非幂等操作。
+3. 持久化恢复不是事务：OpenAI 文档说明序列化的 `RunState` 本身不负责认证，且不保证 exactly-once；LangGraph 文档说明恢复时节点会从头执行，因此前置副作用要幂等。AgentKit 的 `AgentRunState` 同样是未签名快照；宿主必须负责鉴权、原子认领和防止并发重复恢复，外部副作用应使用幂等键。
 
 ### 2.3 一个容易被忽略的细节：工具并发不是免费的
 
@@ -99,9 +98,11 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `AgentRunInput` 接收 `sessionId` 与本次新增 `messages`。新 Agent 实例可以从同一个 Session 延续已完成的对话；`instructions` 不进入历史，run-local 上下文压缩也不会改写 Session。
 - 只有以 `agent.completed` 结束的 run 会追加 Session。停止、取消或失败的 run 不持久化；宿主需串行执行相同 `sessionId` 的 run。
 
-#### 后续：同一 run 的暂停与恢复
+#### 同一 run 的暂停与恢复（已完成）
 
-- 增加可持久化 `AgentRunState`：保存 messages、待执行工具调用、审批决定状态、turn 与累计 usage；为同一 run 恢复定义身份校验和原子状态转换。文档明确快照需要宿主鉴权，不保证 exactly-once；会产生副作用的工具应支持外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。
+- `AgentRunState` 保存当前消息、未执行的工具调用、审批决定、Session 基线、轮次与累计 usage；`agent.paused` 暴露审批暂停点，`agent.stopped` 在 `max_turns` 且仍有待执行工具调用时携带快照。`Agent.resume()` 沿用原 `runId`，不会重放产生待审批工具调用的模型请求。
+- 恢复时校验快照版本、provider、Agent 配置、工具定义与审批策略，并确认 Session 历史没有变化。增加轮数预算后可继续；若保存轮次已超出新上限，则再次以 `max_turns` 停止并保留快照。
+- 快照可 JSON 序列化，但不带签名，也不保证 exactly-once。宿主负责鉴权、保护敏感内容、原子认领与避免重复恢复；会产生副作用的工具应使用外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。底层模型部署和自定义上下文估算器的兼容性也由宿主保证。
 - 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，AgentKit 先把第一层（线程内）做对，跨线程记忆属于应用层。
 
 ### 阶段 4：追踪与评估
@@ -133,7 +134,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 ## 4. 给实现的几条硬约束
 
-1. **核心行为通过公开 `Agent.stream()` seam 测试**。使用确定性的 `LanguageModel` 假实现验证 provider-neutral 行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
+1. **核心行为通过公开的 `Agent.stream()` 和 `Agent.resume()` 测试**。使用确定性的 `LanguageModel` 假实现验证厂商无关的行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
 2. **运行状态通过事件观察**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别）；审批、压缩与限额等运行状态通过事件暴露，宿主策略回调提供决定，但不替代事件时间线。
 3. **`ToolExecutionContext` 需要扩张而不是被替换**：宿主工具确有需要时可增加 `sessionId`、`approvalId`；`runState` 引用留待暂停/恢复方案确定后再加入，保持现在的 `runId/turn/toolCallId/signal`。
 4. **不要把 `finishReason` 当终止原因用**。AI SDK 的文档已经踩过这个坑：`finishReason` 只是最后一次模型调用，循环是否因步数或审批而停，必须由独立的终止原因表达（[loop control](https://ai-sdk.dev/docs/agents/loop-control)）。

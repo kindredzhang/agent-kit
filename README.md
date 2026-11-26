@@ -72,6 +72,14 @@ database.close();
 
 只有以 `agent.completed` 结束的 run 会追加 Session；`agent.stopped`、`agent.failed` 和取消的 run 不会写入。压缩只影响当前 run 的模型请求，不会改写已保存历史。若工具已经执行但 run 未完成，该次历史也不会保存，重试时可能再次调用工具。宿主应串行执行同一 `sessionId` 的 run；Store 只保证单次追加批次的原子性，不会协调并发 run 的读取和写入。
 
+### 同一 run 的暂停与恢复
+
+将 `approvalMode` 设为 `"pause"` 后，需要审批的工具会通过 `agent.paused` 暂停，事件包含 JSON 可序列化的 `runState`。宿主取得批准或拒绝结果后调用 `agent.resume({ state, approval: { toolCallId, decision } })`；恢复事件沿用原 `runId`。同一批次有多个待审批工具时，每个决定会逐次暂停和恢复。`max_turns` 停止时，如果还有尚未执行的工具调用，`agent.stopped` 也会提供 `runState`。
+
+`AgentRunState` 是未完成 run 的快照，不是 Session。它包含当前消息和工具调用，可能含有用户内容、工具参数与结果；宿主应按敏感数据保护，并在恢复前验证调用者身份、授权及快照来源。宿主还应原子地认领并消费快照，避免并发或重复恢复同一个 run。快照本身不提供签名或 exactly-once 保证；工具副作用应使用外部幂等键。恢复时应提供兼容的模型与 Agent 配置、工具定义和审批策略；Agent 会校验 provider、配置、工具及 Session 历史基线，但宿主仍需确保底层模型部署与自定义上下文估算器实现一致。若快照轮次高于新 Agent 的 `maxTurns`，恢复会再次以 `max_turns` 停止并保留原快照，直到提高轮数上限。
+
+当前可恢复点是工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
+
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
 安装依赖：

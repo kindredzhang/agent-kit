@@ -1,5 +1,13 @@
 export { Agent } from "./core/agent";
-export type { AgentEvent, AgentOptions, AgentRunInput, AgentStopReason, MessageDelta } from "./core/agent";
+export type {
+  AgentEvent,
+  AgentOptions,
+  AgentResumeInput,
+  AgentRunInput,
+  AgentRunState,
+  AgentStopReason,
+  MessageDelta,
+} from "./core/agent";
 export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context";
 export { InMemorySessionStore } from "./core/session";
 export type { SessionStore } from "./core/session";
