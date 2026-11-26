@@ -20,6 +20,14 @@ _Avoid_: Finish reason
 The maximum estimated input context allowed for one Model turn in an Agent run.
 _Avoid_: Output limit
 
+**Wall-clock budget**:
+The maximum active execution time allowed for an Agent run and its descendants, excluding time spent paused for a Tool approval.
+_Avoid_: Timeout, deadline
+
+**Tool timeout**:
+The maximum duration one attempt of a Tool execution may take before it is reported as a failed Tool call.
+_Avoid_: Wall-clock budget, cancellation
+
 **Context compaction**:
 Reducing the active conversation context by removing older complete interactions while preserving instructions and the current request.
 _Avoid_: Summarization

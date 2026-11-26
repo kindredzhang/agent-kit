@@ -211,6 +211,34 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
 }
 
+function withToolTimeout<T>(result: T | Promise<T>, timeoutMs: number | undefined, signal?: AbortSignal): Promise<T> {
+  if (timeoutMs === undefined && signal === undefined) return Promise.resolve(result);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      settle();
+    };
+    const onAbort = () => finish(() => reject(new DOMException("The run was cancelled.", "AbortError")));
+    const timer = timeoutMs === undefined ? undefined : setTimeout(
+      () => finish(() => reject(new DOMException(`The tool did not settle within ${timeoutMs}ms.`, "TimeoutError"))),
+      timeoutMs,
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(result).then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+}
+
 function failedOutcome(toolCall: AgentToolCall, error: unknown): ToolExecutionOutcome {
   const normalizedError = toError(error);
   return {
@@ -422,13 +450,19 @@ export class Agent {
 
     let totalUsage: TokenUsage | undefined = restoredState?.usage;
     let currentBudget: AgentBudget | undefined;
+    let signal = input.signal;
+    let runSignal = input.signal;
 
     try {
       const inheritedBudget = getBudgetContext(input);
       const budget = inheritedBudget ?? (restoredState
         ? restoredState.budget
           ? new AgentBudget(
-            { maxModelCalls: restoredState.budget.maxModelCalls, maxTotalTokens: restoredState.budget.maxTotalTokens },
+            {
+              maxModelCalls: restoredState.budget.maxModelCalls,
+              maxTotalTokens: restoredState.budget.maxTotalTokens,
+              maxDurationMs: restoredState.budget.maxDurationMs,
+            },
             restoredState.resumeAt === "model_turn"
               ? { ...restoredState.budget, usageComplete: false, tokenUsageComplete: false }
               : restoredState.budget,
@@ -436,6 +470,10 @@ export class Agent {
           : new AgentBudget({}, { modelCalls: 0, requestsWithUsage: 0, usage: {}, usageComplete: false })
         : new AgentBudget(input.budget));
       currentBudget = budget;
+      budget.startClock();
+      if (budget.signal) {
+        runSignal = input.signal ? AbortSignal.any([input.signal, budget.signal]) : budget.signal;
+      }
       if (restoredState) {
         this.validateRunState(restoredState);
         messages.push(...restoredState.messages);
@@ -519,7 +557,7 @@ export class Agent {
 
       for (let turn = restoredState?.turn ?? 1; turn <= this.maxTurns; turn += 1) {
         yield { type: "agent.budget.updated", runId, budget: budget.snapshot() };
-        if (input.signal?.aborted) {
+        if (signal?.aborted) {
           yield {
             type: "agent.stopped",
             runId,
@@ -544,7 +582,7 @@ export class Agent {
               removedTurnCount: context.removedTurnCount,
             };
           }
-          if (input.signal?.aborted) {
+          if (signal?.aborted) {
             yield {
               type: "agent.stopped",
               runId,
@@ -611,9 +649,9 @@ export class Agent {
               messages: structuredClone(messages),
               tools: structuredClone(tools ?? []),
               ...(this.options.maxOutputTokens !== undefined ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
-              ...(input.signal ? { signal: input.signal } : {}),
+              ...(signal ? { signal: signal } : {}),
             });
-            if (input.signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
+            if (signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
           }
 
           const budgetStop = budget.claim();
@@ -646,7 +684,7 @@ export class Agent {
                 messages,
                 tools,
                 maxOutputTokens: this.options.maxOutputTokens,
-                signal: input.signal,
+                ...(runSignal ? { signal: runSignal } : {}),
               })) {
                 if (event.type === "finish") {
                   finishReason = event.finishReason;
@@ -705,7 +743,7 @@ export class Agent {
               }
               requestCompleted = true;
             } catch (error) {
-              if (isAbortError(error, input.signal)) throw error;
+              if (isAbortError(error, runSignal)) throw error;
               const policy = this.options.modelRetry;
               const canRetry = !emitted && policy !== undefined && attempt < policy.maxAttempts &&
                 (!policy.shouldRetry || await policy.shouldRetry({
@@ -727,7 +765,7 @@ export class Agent {
               toolCalls = [];
               finishReason = "other";
               responseId = undefined;
-              if (policy.delayMs) await abortableDelay(policy.delayMs, input.signal);
+              if (policy.delayMs) await abortableDelay(policy.delayMs, runSignal);
               continue;
             } finally {
               budget.finishRequest(requestUsage, requestCompleted);
@@ -747,7 +785,7 @@ export class Agent {
           yield { type: "turn.completed", runId, turn, finishReason };
         }
 
-        if (input.signal?.aborted) {
+        if (signal?.aborted) {
           yield {
             type: "agent.stopped",
             runId,
@@ -921,7 +959,7 @@ export class Agent {
                 toolCall,
                 input: parsedInput,
                 tool: approvalTool,
-                ...(input.signal ? { signal: input.signal } : {}),
+                ...(signal ? { signal: signal } : {}),
               };
 
               yield {
@@ -934,7 +972,7 @@ export class Agent {
                 tool: approvalTool,
               };
 
-              if (input.signal?.aborted) {
+              if (signal?.aborted) {
                 yield {
                   type: "tool.approval.resolved",
                   runId,
@@ -1005,7 +1043,7 @@ export class Agent {
                   approvalId,
                   toolCallId: toolCall.id,
                   decision: "rejected",
-                  reason: isAbortError(error, input.signal) ? "cancelled" : "handler_failed",
+                  reason: isAbortError(error, signal) ? "cancelled" : "handler_failed",
                 };
                 throw error;
               }
@@ -1059,7 +1097,7 @@ export class Agent {
           }));
         }
         while (planIndex < plans.length) {
-          if (input.signal?.aborted) {
+          if (signal?.aborted) {
             yield {
               type: "agent.stopped",
               runId,
@@ -1082,7 +1120,7 @@ export class Agent {
               toolCallId: plan.toolCall.id,
               name: plan.toolCall.name,
             };
-            if (input.signal?.aborted) {
+            if (signal?.aborted) {
               yield {
                 type: "agent.stopped",
                 runId,
@@ -1094,7 +1132,7 @@ export class Agent {
               };
               return;
             }
-            const outcome = await this.executeTool(plan, runId, turn, budget, input.signal);
+            const outcome = await this.executeTool(plan, runId, turn, budget, runSignal);
             outcomes[plan.index] = outcome;
             yield this.executionEvent(runId, turn, outcome);
             planIndex += 1;
@@ -1116,7 +1154,7 @@ export class Agent {
             };
           }
 
-          if (input.signal?.aborted) {
+          if (signal?.aborted) {
             yield {
               type: "agent.stopped",
               runId,
@@ -1130,7 +1168,7 @@ export class Agent {
           }
 
           const executions = batch.map((batchPlan, batchIndex) =>
-            this.executeTool(batchPlan, runId, turn, budget, input.signal).then((outcome) => ({
+            this.executeTool(batchPlan, runId, turn, budget, runSignal).then((outcome) => ({
               batchIndex,
               plan: batchPlan,
               outcome,
@@ -1187,7 +1225,17 @@ export class Agent {
       }
     } catch (error) {
       if (currentBudget) yield { type: "agent.budget.updated", runId, budget: currentBudget.snapshot() };
-      if (isAbortError(error, input.signal)) {
+      if (currentBudget?.signal?.aborted && !input.signal?.aborted) {
+        yield {
+          type: "agent.stopped",
+          runId,
+          stopReason: "budget_exceeded",
+          budget: currentBudget.snapshot(),
+          ...(totalUsage ? { usage: totalUsage } : {}),
+        };
+        return;
+      }
+      if (isAbortError(error, signal)) {
         yield {
           type: "agent.stopped",
           runId,
@@ -1204,6 +1252,8 @@ export class Agent {
         error: toError(error),
         ...(totalUsage ? { usage: totalUsage } : {}),
       };
+    } finally {
+      currentBudget?.stopClock();
     }
   }
 
@@ -1395,11 +1445,12 @@ export class Agent {
 
       const policy = plan.tool.retry;
       const maxAttempts = policy?.maxAttempts ?? 1;
+      const timeoutMs = plan.tool.timeoutMs;
       let attempt = 0;
       for (;;) {
         attempt += 1;
         try {
-          const result = await plan.tool.execute(plan.input, context);
+          const result = await withToolTimeout(plan.tool.execute(plan.input, context), timeoutMs, signal);
           return {
             toolCall: plan.toolCall,
             result: toJsonValue(result),

@@ -44,6 +44,7 @@ export interface AgentTool<TInput = unknown> extends ToolDefinition {
   annotations?: ToolAnnotations;
   requiresApproval?: boolean;
   retry?: ToolRetryPolicy;
+  timeoutMs?: number;
   parseInput(input: JsonObject): TInput;
   execute(input: TInput, context: ToolExecutionContext): unknown | Promise<unknown>;
 }
@@ -58,12 +59,17 @@ export function defineTool<TSchema extends z.ZodObject>(definition: {
   annotations?: ToolAnnotations;
   requiresApproval?: boolean;
   retry?: ToolRetryPolicy;
+  timeoutMs?: number;
   execute: (
     input: z.output<TSchema>,
     context: ToolExecutionContext,
   ) => unknown | Promise<unknown>;
 }): AgentTool<z.output<TSchema>> {
   if (definition.retry) assertRetryPolicy(definition.retry, "retry");
+  if (definition.timeoutMs !== undefined &&
+    (!Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1)) {
+    throw new RangeError("timeoutMs must be a positive integer.");
+  }
   return {
     name: definition.name,
     description: definition.description,
@@ -74,6 +80,7 @@ export function defineTool<TSchema extends z.ZodObject>(definition: {
       ? { requiresApproval: definition.requiresApproval }
       : {}),
     ...(definition.retry ? { retry: { ...definition.retry } } : {}),
+    ...(definition.timeoutMs !== undefined ? { timeoutMs: definition.timeoutMs } : {}),
     parseInput: (input) => definition.input.parse(input),
     execute: definition.execute,
   };

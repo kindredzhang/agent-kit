@@ -200,6 +200,27 @@ const fetchPage = defineTool({
 - 成功事件和失败事件在 `attempts` 大于 1 时携带尝试次数，追踪中的工具记录也会保存该值。未声明策略的工具保持原有的一次执行语义。
 - `beforeTool` 在整次执行前运行一次，不会为每次重试重复调用。重试耗尽后仍走现有工具错误路径，模型可以决定是否再次调用。
 
+### 工具超时
+
+单个工具可以用 `timeoutMs` 限定自己的执行时长，避免一个不返回的调用拖住整个 run：
+
+```ts
+const fetchPage = defineTool({
+  name: "fetch_page",
+  description: "下载页面",
+  input: z.object({ url: z.string() }),
+  annotations: { readOnly: true, idempotent: true },
+  timeoutMs: 5000,
+  execute: ({ url }) => fetch(url).then((response) => response.text()),
+});
+```
+
+- `timeoutMs` 必须是正整数。超时抛出一个 `name` 为 `TimeoutError` 的错误，走与普通工具失败相同的路径：`tool.execution.failed` 事件、错误回灌模型、run 继续。
+- 超时是**每次尝试**的时限，与 `retry` 叠加时每次重试各自计时。若工具不幂等，不要在它上面同时开重试——超时不代表副作用没有发生。
+- 取消 run 会立即中断等待；这与超时是不同的原因，分别对应 `AbortError` 与 `TimeoutError`。
+- `timeoutMs` 只结束等待，不强制终止已开始的工作：无法被取消的 Promise 仍在后台跑完，只是结果被丢弃。需要真正终止时，工具应自己监听 `context.signal`。
+- 整体时限用预算里的 `maxDurationMs`；`timeoutMs` 是单次调用的粒度。
+
 ### 运行前 Hooks
 
 `Agent` 的 `hooks` 可在模型请求和工具执行前检查运行上下文。Hook 可同步执行或返回 Promise；正常返回允许继续，抛错则阻止对应操作。
@@ -353,16 +374,16 @@ const agent = new Agent({
 
 版本：`@modelcontextprotocol/client` 与 `@modelcontextprotocol/server` 2.4.0 仅作为开发依赖用于契约测试；已在 Bun 1.3.14 下验证内存传输、工具列表、调用与错误语义。
 
-### 任务树用量与调用次数
+### 任务树用量、调用次数与墙钟预算
 
-在根 run 的 `stream()` 输入中设置 `budget: { maxModelCalls: 12, maxTotalTokens: 50000 }`，可限制该 run 和通过 `createSubagentTool` 启动的后代合计发起的模型请求次数及报告的 token 用量。两个上限均可单独设置；每次请求在开始前认领一个调用名额，失败或取消不会返还。未设置上限时仍会统计用量。预算属于一次根 run，独立 run 不共享额度。
+在根 run 的 `stream()` 输入中设置 `budget: { maxModelCalls: 12, maxTotalTokens: 50000, maxDurationMs: 60000 }`，可限制该 run 和通过 `createSubagentTool` 启动的后代合计发起的模型请求次数、报告的 token 用量，以及活跃执行时间。三个上限均可单独设置；每次请求在开始前认领一个调用名额，失败或取消不会返还。未设置上限时仍会统计用量。预算属于一次根 run，独立 run 不共享额度。
 
-`agent.budget.updated` 事件提供 `modelCalls`、各请求报告的累计 `usage`、`requestsWithUsage`、`usageComplete` 和 `tokenUsageComplete`。后者分别表明所有请求的 input/output/total 字段或 total 字段是否完整；请求尚未结束、异常中断或字段缺失时为 false。即使完整，也不能将统计视为服务端账单。现有终态 `usage` 仍只包含当前 run。
+`agent.budget.updated` 事件提供 `modelCalls`、各请求报告的累计 `usage`、`requestsWithUsage`、`usageComplete`、`tokenUsageComplete` 和 `elapsedMs`。`usageComplete` 与 `tokenUsageComplete` 分别表明所有请求的 input/output/total 字段或 total 字段是否完整；请求尚未结束、异常中断或字段缺失时为 false。即使完整，也不能将统计视为服务端账单。现有终态 `usage` 仍只包含当前 run。
 
 ```ts
 for await (const event of agent.stream({
   messages: [{ role: "user", content: "调研并比较方案。" }],
-  budget: { maxModelCalls: 12, maxTotalTokens: 50000 },
+  budget: { maxModelCalls: 12, maxTotalTokens: 50000, maxDurationMs: 60000 },
 })) {
   if (event.type === "agent.budget.updated") console.log(event.budget);
   if (event.type === "agent.stopped") console.log(event.stopReason);
@@ -370,6 +391,8 @@ for await (const event of agent.stream({
 ```
 
 调用次数或已报告的 `totalTokens` 达到上限时，下一个需要调用模型的 run 以 `budget_exceeded` 停止。**token 上限是软上限**：已经发出的请求仍可完成，尤其并行请求的实际总用量可能超过上限；工具也可能继续执行。启用 token 上限时，如果请求未正常完成或没有报告有效的 `totalTokens`，下一个需要调用模型的 run 以 `usage_unavailable` 停止。预算只覆盖 AgentKit 管理的模型请求，不包含工具自行发起的外部调用或收费；它不保证美元费用上限。
+
+`maxDurationMs` 统计的是**活跃执行时间**，不是墙钟跨度：run 因审批暂停、等待宿主决定的时间不计入，恢复后从快照里的 `elapsedMs` 接着算。额度耗尽时 AgentKit 中止在途的模型请求与工具执行，并以 `budget_exceeded` 停止，因此它同时兜住了「模型连接不返回」和「工具永不 resolve」这两种会让进程无限挂起的情况。工具不想被整体预算打断时，应改为给它自己设 `timeoutMs`（见下节）。
 
 审批暂停和 `max_turns` 快照保存共享账本，恢复时继续累计。旧版不含预算的快照仍可恢复，其此前的树级用量无法重建，恢复后从新的账本开始统计。快照在有其他模型请求执行时拒绝生成；宿主仍须确保快照的来源可信并避免重复恢复。
 

@@ -163,6 +163,16 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 该脚本做过反向验证：在消费者里 import `agent-kit/openai` 且不装 SDK 时，`tsc` 如期报 `TS2307`——说明「核心类型可解析」的检查不是空转。
 - `examples` job 的开关放在仓库变量而不是 secret 上，因为 GitHub Actions 的 job 级 `if` 只允许 `github`、`needs`、`vars`、`inputs` 四个上下文，`secrets` 在其中不可用（[context availability](https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability)）。开关打开但三个 secret 缺任何一个时，该 job 显式失败，避免「看着绿其实没跑」。
 
+### 阶段 11：超时与墙钟预算（已完成）
+
+此前轮次、上下文、调用次数、token 都有上限，只有时间没有。一个永不 resolve 的工具或不返回的网关连接会让 run 无限期占住进程，而其余越界都能优雅降级成 `agent.stopped`。
+
+- 时间并入既有 `AgentBudget` 而不是新增概念：`maxDurationMs` 加进 `AgentBudgetOptions`，`elapsedMs` 加进 `AgentBudgetSnapshot`。快照、检查点、trace、`agent.budget.updated` 全部免费复用，停因沿用 `budget_exceeded`。
+- 计时按**活跃时间**累积，暂停期间不计。`AgentBudget` 维护 `elapsedBeforeSegment` 与 `segmentStartedAt`，`startClock` / `stopClock` 用深度计数，使共享预算的子代理 run 不会重复计时。`elapsedMs` 进快照，所以崩溃恢复后是接着算剩余额度，而不是重新计时——否则持久恢复就成了绕过时间上限的通道。
+- 预算派生一个 `AbortSignal`，与宿主的 `input.signal` 用 `AbortSignal.any` 合成 `runSignal`，只注入在途的模型请求、工具执行与重试等待。**用户取消与预算耗尽因此保持语义分离**：`signal` 仍表示宿主取消，既有 8 处 `signal?.aborted → cancelled` 判断不受影响；预算耗尽走原生的 `claim()` 路径产出 `budget_exceeded`。第一版把预算信号直接并进 `signal`，导致忽略 abort 的工具会被报成 `cancelled`，由 `reports the wall-clock budget, not cancellation, when a tool ignores the abort` 固定住。
+- `defineTool({ timeoutMs })` 提供单次尝试粒度：超时抛 `TimeoutError`，走普通工具失败路径（`tool.execution.failed`、错误回灌模型、run 继续），并与 `retry` 正交叠加。
+- 实现细节：超时定时器**不能** `unref()`。Bun 会因此认为没有挂起句柄而直接退出，定时器永不触发；`unref` 只适用于「不该阻止进程退出」的辅助定时器，而超时定时器恰恰是应该保持进程活着的那个。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |
