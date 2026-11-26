@@ -37,8 +37,16 @@ export { InMemorySessionStore } from "./core/session";
 export type { SessionStore } from "./core/session";
 export { InMemoryRunStore } from "./core/run-store";
 export type { AgentRunStore } from "./core/run-store";
+export { AgentApprovalQueue, InMemoryApprovalStore } from "./core/approval";
+export type {
+  AgentApprovalDecision,
+  AgentApprovalRequest,
+  AgentApprovalStore,
+  AgentPausedEvent,
+} from "./core/approval";
 export { SQLiteSessionStore } from "./storage/sqlite-session";
 export { SQLiteRunStore } from "./storage/sqlite-run-store";
+export { SQLiteApprovalStore } from "./storage/sqlite-approval-store";
 export { createMCPToolSource } from "./integrations/mcp";
 export type {
   MCPToolCallResult,

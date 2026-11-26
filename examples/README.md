@@ -26,7 +26,7 @@ bun run examples approval   # 只运行匹配的示例
 | --- | --- |
 | `tool-loop.ts` | 多工具并行调用、`AgentTraceCollector`、`evaluateToolTrajectory`、usage 累计 |
 | `structured-output.ts` | `outputSchema` 隐式 `final_answer` 工具、本地 Zod 校验后的 `structuredOutput` |
-| `approval.ts` | `approvalMode: "pause"`、`runStore` 保存待审批调用、`resume({ runId, approval })`、拒绝不执行 |
+| `approval.ts` | `approvalMode: "pause"`、`AgentApprovalQueue` 跨进程记录与批准、`resume(agent, runId)`、拒绝不执行 |
 | `durable-recovery.ts` | 检查点写入顺序、崩溃后按 `runId` 恢复、同批次重放的 `toolCallId` 幂等键、终态清理 |
 
 `durable-recovery.ts` 值得单独说明：它**故意**在工具执行后重新从同一检查点恢复一次，用来证明重放会带着相同的 `toolCallId` 回来，因此幂等键能拦住重复扣款。这正是持久恢复的 at-least-once 语义，不是 bug。

@@ -135,6 +135,15 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 终态清理：completed / failed / 不可恢复的 stopped 删除检查点，paused 与带 `runState` 的 `max_turns` 保留并刷新。删除先于终态事件送达宿主。写入失败按 run 失败处理，不静默降级。
 - Session 仍在 `agent.completed` 时追加；崩溃若落在「Session 已写、检查点未删」之间，恢复时的历史基线校验会安全拒绝。子代理不继承 `runStore`。
 
+### 阶段 8：审批队列（已完成）
+
+`AgentApprovalQueue` 把「暂停 → 落库 → 另一个进程批准 → 恢复」收进库内，`AgentApprovalStore` 提供内存与 SQLite 实现。
+
+- `observe()` 包装事件流并在旁边记录 `agent.paused` 的待审批调用，同时透传全部事件；遇到终态清空该 run 的请求。
+- 请求键是 Agent 生成的 `approvalId`，不是模型给的 `toolCallId`：后者在同一 run 的后续轮次可能重复，前者每次暂停都是新值。每个 run 至多保留一条记录。
+- `decide()` 拒绝重复决定与未知请求，`resume(agent, runId)` 把已记录的决定喂回 `agent.resume`。鉴权、原子认领与并发去重仍归宿主。
+- 与 [OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/) 的 `RunState` 一样，队列本身不认证、不保证 exactly-once。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

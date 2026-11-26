@@ -91,6 +91,37 @@ bun run examples            # 或 bun run examples approval
 
 不配置 `runStore` 时，可恢复点只有工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用；配置后还会有运行中的检查点，见下节。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
 
+### 审批队列
+
+"暂停 → 落库 → 另一个进程批准 → 恢复"这段样板由 `AgentApprovalQueue` 承担：
+
+```ts
+import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore } from "./index";
+
+const approvals = new AgentApprovalQueue({ store: new SQLiteApprovalStore(database) });
+const agent = new Agent({ model, tools, approvalMode: "pause", runStore: new SQLiteRunStore(database) });
+
+for await (const event of approvals.observe(agent.stream({ messages }))) {
+  // 事件原样透传，队列在旁边记录 agent.paused 的待审批调用
+}
+```
+
+另一个进程、另一次部署都能看到同一队列：
+
+```ts
+const pending = await approvals.list();               // 默认只看未决的
+await approvals.decide({ runId, approvalId, decision: "approved" });
+for await (const event of approvals.resume(agent, runId)) {
+  // 队列把已记录的决定喂给 agent.resume({ runId, approval })
+}
+```
+
+- `observe()` 包装事件流：遇到 `tool.approval.requested` 记下工具描述与解析后的输入，遇到 `agent.paused` 落库，遇到终态（`agent.completed`、`agent.failed`、不带 `runState` 的 `agent.stopped`）清空该 run 的请求。抛出的异常不吞，事件流照常向上传播。
+- 请求以 `approvalId` 为键，不是 `toolCallId`。`toolCallId` 来自模型，同一 run 的后续轮次完全可能重复使用同一个值；`approvalId` 由 Agent 每次暂停时新生成，因此同一 run 可以有多次审批。每个 run 至多保留一条记录：新一次暂停会替换上一次。
+- `decide()` 只接受未决请求，重复决定与未知 `approvalId` 都抛错，避免两个审批人静默覆盖彼此。
+- `resume(agent, runId)` 读取该 run 的决定并转交给 `agent.resume`；没有决定时等价于普通的 `agent.resume({ runId })`，用于从崩溃检查点续跑。
+- 存储与 `AgentRunStore` 相互独立：`InMemoryApprovalStore` 用于测试，`SQLiteApprovalStore` 用于跨进程。`AgentApprovalQueue` 不负责鉴权、原子认领或并发去重，这些仍由宿主完成。
+
 ### 进程崩溃后的持久恢复
 
 前面的 `AgentRunState` 只在暂停或 `max_turns` 时交给宿主，进程崩溃时进行中的 run 不会留下任何快照。配置 `runStore` 后，Agent 会在 run 执行过程中写入检查点：
