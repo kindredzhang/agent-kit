@@ -120,9 +120,10 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 子代理**先做 agents-as-tools，不做 handoff**：子代理作为一个工具，输入任务描述、输出摘要，父代理保留控制权与聚合。这正是 OpenAI 对「有界子任务」的推荐用法，且天然复用阶段 1–3 的工具作用域、审批与追踪（[multi-agent](https://openai.github.io/openai-agents-python/multi_agent/)）。
 - 与子代理一同交付了深度与并发两道硬上限（默认 3 / 2）。跨代理共享预算已在后续批次完成：`Agent.stream` 的 `budget.maxModelCalls` 与 `maxTotalTokens` 由根 run 和经 `createSubagentTool` 启动的后代共用账本，详见 [docs/plans/shared-agent-budget.md](../plans/shared-agent-budget.md)；`onUsage` 仍只上报单个子 run 的 usage。没有上限的子代理会瞬间放大成本，且预算必须跨代理共享，否则「预算」只是个装饰。
 
-### 阶段 6：运行前 Hooks（已完成）
+### 阶段 6：运行前 Hooks 与结构化输出（已完成）
 
 - `Agent` 的 `hooks.beforeModel` / `hooks.beforeTool` 在模型请求和工具实际执行前提供可抛错的检查点。`beforeModel` 位于上下文压缩之后、预算认领之前；`beforeTool` 位于参数解析与审批之后，恢复后的待执行工具会重新检查。Hook 收到副本，不能修改实际请求。它们不向子代理继承，也不进入恢复快照，宿主恢复时需提供一致策略。
+- `outputSchema` 把一个隐式只读 `final_answer` 工具加入模型工具列表，最终结果经本地 Zod 校验后以 `structuredOutput` 返回；校验失败按工具错误回灌模型，未调用时插入一条不写入 Session 的 developer 提醒。实现不依赖厂商原生 JSON 模式，因此三个适配器行为一致，代价是多一次工具往返。设计取舍：只接受单独成轮的输出调用，拒答、截断和 `max_turns` 都不产生结构化结果。
 
 ### 明确推迟
 

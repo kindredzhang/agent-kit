@@ -99,7 +99,9 @@ async function runSubagent(input: {
   for await (const event of input.agent.stream(runInput)) {
     switch (event.type) {
       case "agent.completed":
-        content = event.message.content;
+        content = event.structuredOutput !== undefined
+          ? JSON.stringify(event.structuredOutput)
+          : event.message.content;
         stopReason = event.stopReason;
         usage = event.usage;
         break;

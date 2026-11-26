@@ -59,3 +59,11 @@ _Avoid_: Tool result
 **Subagent**:
 An Agent run started on behalf of a parent Agent run, exposed to that parent as a Tool whose result is the child run's final text.
 _Avoid_: Agent run, handoff
+
+**Structured output**:
+A final answer that an Agent validates against a host-provided schema before the run completes.
+_Avoid_: JSON mode, response format
+
+**Output tool**:
+The implicit Tool an Agent exposes to a model so that a final structured answer arrives as a Tool call.
+_Avoid_: Final answer

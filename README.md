@@ -105,6 +105,36 @@ const agent = new Agent({
 
 Hook 收到的消息、工具定义和原始工具调用是副本，修改它们不会改变实际请求；`beforeTool` 接收模型的原始 JSON 参数，而非工具解析后的值。Hook 不会继承到子代理，宿主应分别配置各个 Agent。它们可以读取敏感内容，应由可信宿主提供；此版本不提供输出过滤，也不阻止已经流出的模型内容。Hook 配置不保存在 run 快照中，恢复时由宿主确保策略符合要求。
 
+### 结构化输出
+
+传入 `outputSchema` 后，Agent 会向模型提供一个名为 `final_answer` 的隐式工具，其输入 schema 由 Zod 对象生成。模型必须通过该工具提交最终结果；Agent 在本地校验通过后，以 `structuredOutput` 返回解析后的对象：
+
+```ts
+import { z } from "zod";
+
+const answer = z.object({
+  sentiment: z.enum(["positive", "negative"]),
+  confidence: z.number().min(0).max(1),
+});
+
+const agent = new Agent({ model, outputSchema: answer });
+for await (const event of agent.stream({
+  messages: [{ role: "user", content: "判断这条反馈的情绪。" }],
+})) {
+  if (event.type === "agent.completed") console.log(event.structuredOutput);
+}
+```
+
+行为与边界：
+
+- 校验失败时，Zod 错误会作为工具错误回灌模型，模型可以在后续轮次修正；最终只接受校验通过的结果。`tool.execution.failed` 和追踪中同样能看到这次失败。
+- 模型没有调用输出工具而直接给出文本时，Agent 会追加一条不写入 Session 的 developer 消息，提醒它调用 `final_answer`；若在 `max_turns` 之前仍未提交，则以 `max_turns` 停止。
+- 输出工具必须单独出现在一轮工具调用中，与其它工具混用会按工具错误处理，避免未经确认就结束 run。
+- 模型拒答时仍以 `refusal` 结束，不产生 `structuredOutput`；输出被截断时以 `length` 停止。
+- 输出工具是只读且免审批的隐式工具，会对 `beforeTool` hook 和追踪可见。工具名默认 `final_answer`，可用 `outputToolName` 修改；与显式工具重名会在构造时报错。`outputToolName` 单独提供而没有 `outputSchema` 也会报错。
+- 该实现不依赖各厂商的原生 JSON 模式，因此在三个适配器上行为一致；代价是额外一次工具往返，并且 schema 通过工具定义表达。子代理使用结构化输出时，父代理收到的是 JSON 字符串。
+- 输出配置不进入 Session，但会写入暂停恢复快照的工具定义校验；恢复时必须提供相同的 `outputSchema` 和 `outputToolName`。
+
 ### 追踪与工具轨迹评估
 
 为每次 `agent.stream()` 或 `agent.resume()` 创建一个 `AgentTraceCollector`，并将事件传给 `record()`。`finish()` 返回可序列化的追踪记录，宿主可以写入自己的日志或遥测系统。追踪层级为 run → turn → 模型调用与工具执行，同时记录审批、上下文压缩、用量和运行结果。

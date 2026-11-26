@@ -1,3 +1,4 @@
+import * as z from "zod";
 import { ContextManager } from "./context";
 import { AgentBudget, getBudgetContext, setBudgetContext } from "./budget";
 import type { AgentBudgetOptions, AgentBudgetSnapshot } from "./budget";
@@ -11,6 +12,8 @@ import type {
   AgentMessage,
   AgentToolCall,
   FinishReason,
+  JsonObject,
+  JsonSchema,
   JsonValue,
   LanguageModel,
   ModelProvider,
@@ -119,6 +122,7 @@ export type AgentEvent =
       stopReason: "completed" | "refusal";
       message: Extract<AgentMessage, { role: "assistant" }>;
       finishReason: FinishReason;
+      structuredOutput?: JsonValue;
       usage?: TokenUsage;
       responseId?: string;
     }
@@ -158,6 +162,8 @@ export interface AgentOptions {
   hooks?: AgentHooks;
   instructions?: string;
   tools?: readonly AnyAgentTool[];
+  outputSchema?: z.ZodObject;
+  outputToolName?: string;
   approveTool?: ToolApprovalHandler;
   approvalMode?: "callback" | "pause";
   maxOutputTokens?: number;
@@ -224,6 +230,9 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
 export class Agent {
   private readonly toolsByName = new Map<string, AnyAgentTool>();
   private readonly maxTurns: number;
+  private readonly outputToolName?: string;
+  private readonly outputDefinition?: ToolDefinition;
+  private readonly outputParser?: (input: JsonObject) => unknown;
 
   constructor(private readonly options: AgentOptions) {
     this.maxTurns = options.maxTurns ?? 10;
@@ -234,12 +243,36 @@ export class Agent {
       (!Number.isSafeInteger(options.maxContextTokens) || options.maxContextTokens < 1)) {
       throw new RangeError("maxContextTokens must be a positive safe integer.");
     }
+    if (options.outputSchema) {
+      this.outputToolName = options.outputToolName ?? "final_answer";
+      if (this.outputToolName.length === 0) throw new TypeError("outputToolName must be a non-empty string.");
+      this.outputDefinition = {
+        name: this.outputToolName,
+        description: "Submit the final answer. Use this tool only when the task is complete and all other tool calls have finished.",
+        inputSchema: z.toJSONSchema(options.outputSchema, { io: "input" }) as JsonSchema,
+      };
+      this.outputParser = (input) => options.outputSchema!.parse(input);
+    } else if (options.outputToolName !== undefined) {
+      throw new TypeError("outputToolName requires outputSchema.");
+    }
 
     for (const tool of options.tools ?? []) {
       if (this.toolsByName.has(tool.name)) {
         throw new Error(`Tool names must be unique. Duplicate name: ${tool.name}.`);
       }
       this.toolsByName.set(tool.name, tool);
+    }
+    if (this.outputToolName !== undefined && this.toolsByName.has(this.outputToolName)) {
+      throw new Error(`Tool name "${this.outputToolName}" is reserved for structured output.`);
+    }
+    if (this.outputToolName !== undefined) {
+      this.toolsByName.set(this.outputToolName, {
+        ...this.outputDefinition!,
+        annotations: { readOnly: true },
+        requiresApproval: false,
+        parseInput: (toolInput) => this.outputParser!(toolInput),
+        execute: (parsedInput) => parsedInput,
+      });
     }
   }
 
@@ -560,14 +593,50 @@ export class Agent {
           return;
         }
 
-        if (finishReason === "refusal" || toolCalls.length === 0) {
+        if (finishReason === "refusal") {
           if (sessionId !== undefined && sessionStore) {
             await sessionStore.append(sessionId, sessionMessagesToAppend);
           }
           yield {
             type: "agent.completed",
             runId,
-            stopReason: finishReason === "refusal" ? "refusal" : "completed",
+            stopReason: "refusal",
+            message,
+            finishReason,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(responseId ? { responseId } : {}),
+          };
+          return;
+        }
+
+        if (toolCalls.length === 0) {
+          if (this.outputToolName !== undefined) {
+            if (turn === this.maxTurns) {
+              yield {
+                type: "agent.stopped",
+                runId,
+                stopReason: "max_turns",
+                message,
+                finishReason,
+                ...(totalUsage ? { usage: totalUsage } : {}),
+                ...(responseId ? { responseId } : {}),
+              };
+              return;
+            }
+            messages.push({
+              role: "developer",
+              content: `Submit the final answer by calling the "${this.outputToolName}" tool with input that matches its schema. Do not answer in plain text.`,
+            });
+            continue;
+          }
+
+          if (sessionId !== undefined && sessionStore) {
+            await sessionStore.append(sessionId, sessionMessagesToAppend);
+          }
+          yield {
+            type: "agent.completed",
+            runId,
+            stopReason: "completed",
             message,
             finishReason,
             ...(totalUsage ? { usage: totalUsage } : {}),
@@ -611,6 +680,16 @@ export class Agent {
           const tool = this.toolsByName.get(toolCall.name);
           if (!tool) {
             const outcome = failedOutcome(toolCall, new Error(`Tool "${toolCall.name}" is not available.`));
+            outcomes[index] = outcome;
+            yield this.executionEvent(runId, turn, outcome);
+            continue;
+          }
+
+          if (toolCall.name === this.outputToolName && toolCalls.length > 1) {
+            const outcome = failedOutcome(
+              toolCall,
+              new Error(`The "${this.outputToolName}" tool must be the only tool call in a turn.`),
+            );
             outcomes[index] = outcome;
             yield this.executionEvent(runId, turn, outcome);
             continue;
@@ -880,6 +959,26 @@ export class Agent {
           sessionMessagesToAppend.push(toolMessage);
           toolInteractionMessages.push(toolMessage);
         }
+
+        const outputOutcome = this.outputToolName !== undefined && toolCalls.length === 1 &&
+          toolCalls[0]!.name === this.outputToolName ? outcomes[0]! : undefined;
+        if (outputOutcome && !outputOutcome.error) {
+          if (sessionId !== undefined && sessionStore) {
+            await sessionStore.append(sessionId, sessionMessagesToAppend);
+          }
+          yield {
+            type: "agent.completed",
+            runId,
+            stopReason: "completed",
+            message,
+            finishReason,
+            structuredOutput: outputOutcome.result,
+            ...(totalUsage ? { usage: totalUsage } : {}),
+            ...(responseId ? { responseId } : {}),
+          };
+          return;
+        }
+
         contextManager.addToolInteraction(toolInteractionMessages);
       }
     } catch (error) {
@@ -905,12 +1004,16 @@ export class Agent {
   }
 
   private toolDefinitions(): ToolDefinition[] | undefined {
-    return this.options.tools?.map(({ name, description, inputSchema, strict }) => ({
-      name,
-      description,
-      inputSchema,
-      ...(strict !== undefined ? { strict } : {}),
-    }));
+    const definitions: ToolDefinition[] = [
+      ...(this.outputDefinition ? [this.outputDefinition] : []),
+      ...(this.options.tools ?? []).map(({ name, description, inputSchema, strict }) => ({
+        name,
+        description,
+        inputSchema,
+        ...(strict !== undefined ? { strict } : {}),
+      })),
+    ];
+    return definitions.length > 0 ? definitions : undefined;
   }
 
   private toolApprovalPolicies(): AgentRunState["toolApprovalPolicies"] {
