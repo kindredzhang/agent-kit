@@ -9,6 +9,17 @@ export type {
   MessageDelta,
 } from "./core/agent";
 export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context";
+export { evaluateToolTrajectory } from "./core/evaluation";
+export type { ToolTrajectoryEvaluation, ToolTrajectoryStep } from "./core/evaluation";
+export { AgentTraceCollector } from "./core/trace";
+export type {
+  AgentApprovalTrace,
+  AgentModelTrace,
+  AgentToolTrace,
+  AgentTrace,
+  AgentTraceOptions,
+  AgentTurnTrace,
+} from "./core/trace";
 export { InMemorySessionStore } from "./core/session";
 export type { SessionStore } from "./core/session";
 export { SQLiteSessionStore } from "./storage/sqlite-session";

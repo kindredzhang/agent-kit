@@ -19,9 +19,9 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 后续可对照的能力包括 hooks/中间件、追踪、评估、MCP、子代理与跨代理预算；不同产品覆盖范围和实现层级不同，不能视为五家都内建了全部能力。
 
-仍待推进的核心能力：
+- `AgentTraceCollector` 将 run、turn、模型调用与工具执行组织成可导出的追踪记录；`evaluateToolTrajectory` 支持确定性的工具轨迹评估。
 
-1. **追踪、评估与扩展集成**。需要先明确稳定的 run/turn/tool 事件如何映射到 span、如何做确定性的轨迹评估，再决定 MCP 与子代理的接入形态。
+下一阶段聚焦 MCP 与子代理的接入形态。
 
 ---
 
@@ -105,11 +105,11 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 快照可 JSON 序列化，但不带签名，也不保证 exactly-once。宿主负责鉴权、保护敏感内容、原子认领与避免重复恢复；会产生副作用的工具应使用外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。底层模型部署和自定义上下文估算器的兼容性也由宿主保证。
 - 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，AgentKit 先把第一层（线程内）做对，跨线程记忆属于应用层。
 
-### 阶段 4：追踪与评估
+### 阶段 4：追踪与评估（已完成）
 
-- 把现有 `AgentEvent` 映射为 span 树：run → turn → chat（模型调用）→ execute_tool，字段采用 GenAI 语义约定（`gen_ai.operation.name`、`gen_ai.request.model`、输入输出可选记录），名称对齐 AI SDK 的 `invoke_agent` / `step` / `chat` / `execute_tool`（[telemetry](https://ai-sdk.dev/docs/ai-sdk-core/telemetry)）。先输出一个纯 JS 的 span 收集器接口，OTel 只作为可选实现，不引入运行时依赖。
-- 评估先用「轨迹夹具」而不是语义评分：为每个测试用例固定 expected tool trajectory，跑 `bun test` 做精确匹配；参考 ADK 的 `tool_trajectory_avg_score` 默认 1.0，并明确它比 `response_match_score`（ROUGE-1，对措辞敏感）更适合 CI（[evaluate](https://adk.dev/evaluate/)）。LLM 裁判作为后续可选项。
-- 注意隐私开关：默认是否记录工具入参与结果，必须显式可选（对照 `recordInputs`/`recordOutputs` 与 `trace_include_sensitive_data`）。
+- `AgentTraceCollector` 消费 `AgentEvent`，生成 run → turn → 模型调用与工具执行的 span 树。记录包含时间、审批、上下文压缩、用量与运行结果。操作名使用 `invoke_agent`、`step`、`chat`、`execute_tool`，宿主可填入 `requestModel` 并将记录映射到所用的遥测系统。收集器无新增运行时依赖。([AI SDK telemetry](https://ai-sdk.dev/docs/ai-sdk-core/telemetry))
+- `evaluateToolTrajectory` 按执行开始事件比较轮次与工具名，并报告首个差异。Bun 测试使用固定模型响应验证正序、错序、缺失和额外执行，覆盖并行与审批恢复。([ADK evaluate](https://adk.dev/evaluate/))
+- `recordInputs` 与 `recordOutputs` 默认关闭，宿主可独立开启工具入参、助手正文及成功的工具结果记录。暂停与恢复记录通过 `runId` 关联。
 
 ### 阶段 5：MCP 与子代理
 

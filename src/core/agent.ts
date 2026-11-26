@@ -3,6 +3,7 @@ import type { ContextTokenEstimator } from "./context";
 import { assertSessionId } from "./session";
 import type { SessionStore } from "./session";
 import { toJsonValue } from "./json";
+import { combineUsage } from "./usage";
 import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools";
 import type {
   AgentMessage,
@@ -158,24 +159,6 @@ interface ToolExecutionPlan {
   toolCall: AgentToolCall;
   tool: AnyAgentTool;
   input: unknown;
-}
-
-function combineUsage(current: TokenUsage | undefined, next: TokenUsage): TokenUsage {
-  const inputTokens = current?.inputTokens === undefined && next.inputTokens === undefined
-    ? undefined
-    : (current?.inputTokens ?? 0) + (next.inputTokens ?? 0);
-  const outputTokens = current?.outputTokens === undefined && next.outputTokens === undefined
-    ? undefined
-    : (current?.outputTokens ?? 0) + (next.outputTokens ?? 0);
-  const totalTokens = current?.totalTokens === undefined && next.totalTokens === undefined
-    ? undefined
-    : (current?.totalTokens ?? 0) + (next.totalTokens ?? 0);
-
-  return {
-    ...(inputTokens !== undefined ? { inputTokens } : {}),
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
-    ...(totalTokens !== undefined ? { totalTokens } : {}),
-  };
 }
 
 function toError(value: unknown): Error {

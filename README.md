@@ -80,6 +80,31 @@ database.close();
 
 当前可恢复点是工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
 
+### 追踪与工具轨迹评估
+
+为每次 `agent.stream()` 或 `agent.resume()` 创建一个 `AgentTraceCollector`，并将事件传给 `record()`。`finish()` 返回可序列化的追踪记录，宿主可以写入自己的日志或遥测系统。追踪层级为 run → turn → 模型调用与工具执行，同时记录审批、上下文压缩、用量和运行结果。
+
+```ts
+import { AgentTraceCollector, evaluateToolTrajectory } from "./index";
+
+const collector = new AgentTraceCollector();
+for await (const event of agent.stream({
+  messages: [{ role: "user", content: "查询东京的天气。" }],
+})) {
+  collector.record(event);
+}
+
+const trace = collector.finish();
+if (trace) {
+  const result = evaluateToolTrajectory([trace], [{ turn: 1, name: "get_weather" }]);
+  if (!result.passed) throw new Error(JSON.stringify(result.mismatch));
+}
+```
+
+暂停和恢复各自产生带独立 `id` 的追踪记录，并共享 `runId`。评估时按发生顺序传入同一 run 的各段记录。评估严格比较 `tool.execution.started` 对应的轮次与工具名，返回实际序列以及第一个差异的零基索引。这样并行工具的完成顺序不会影响结果。需要在 CI 中断言固定轨迹时，可以用预设响应的 `LanguageModel`。工具是否成功以及 run 是否完成，可以分别通过追踪中的 `status` 断言。
+
+默认只记录运行元数据。可独立开启 `recordInputs` 以记录本段事件中观察到的原始工具参数，或开启 `recordOutputs` 以记录助手正文和成功的工具结果。收集器只读取事件，因此模型请求正文和恢复快照中的载荷不会进入追踪。可通过 `requestModel` 补充模型标识。run 上的用量在终态或暂停事件提供累计值时覆盖为该值，因此同一 run 的分段用量不能直接相加。若宿主提前停止消费事件，仍可调用 `finish()` 得到 `interrupted` 记录。
+
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
 安装依赖：
