@@ -97,11 +97,11 @@ export function createMCPToolSource(
 | 切片 | 内容 | 测试接缝 |
 | --- | --- | --- |
 | A0 | 依赖验证（**已完成**，见下方实测结论） | 一次性契约测试 |
-| A1 | 只读工具映射、命名空间、结构化结果；模型调用后得到工具结果 | `Agent.stream` + 真实 in-memory 服务端 |
-| A2 | 默认审批与 `trustAnnotations`；敌意服务端声称 `readOnlyHint: true` 的写工具仍会暂停 | `Agent.stream` 产生 `tool.approval.requested`，而非直接执行 |
-| A3 | `isError`、结构化结果优先级、分页、非法名称、重名 | fake port 单测 + 一个 `Agent.stream` 错误回灌用例 |
-| A4 | 工具定义变化：暂停中的 run 在服务端 schema 变化后恢复被拒绝 | `Agent.resume` 发出 `agent.failed`，错误指向工具不匹配 |
-| A5 | README 与路线图更新；声明宿主负责鉴权、连接生命周期与服务端行为可信度 | 文档评审 |
+| A1 | 只读工具映射、命名空间、结构化结果；模型调用后得到工具结果（**已完成**） | `Agent.stream` + 真实 in-memory 服务端 |
+| A2 | 默认审批与 `trustAnnotations`；敌意服务端声称 `readOnlyHint: true` 的写工具仍会暂停（**已完成**） | `Agent.stream` 产生 `tool.approval.requested`，而非直接执行 |
+| A3 | `isError`、结构化结果优先级、分页、非法名称、重名（**已完成**） | fake port 单测 + 一个 `Agent.stream` 错误回灌用例 |
+| A4 | 工具定义变化：暂停中的 run 在服务端 schema 变化后恢复被拒绝（**已完成**） | `Agent.resume` 发出 `agent.failed`，错误指向工具不匹配 |
+| A5 | README 与路线图更新；声明宿主负责鉴权、连接生命周期与服务端行为可信度（**已完成**） | 文档评审 |
 
 **A0 实测结论（2026-11-26，Bun 1.3.14）**
 
@@ -112,6 +112,13 @@ export function createMCPToolSource(
 - 服务端 `registerTool` 的 `inputSchema` 必须是 Zod v4 schema 或 raw shape；测试辅助代码需从 `zod/v4` 导入。
 
 因此适配器只需区分「结果」与「抛出」两条路径：`isError` 结果转为工具错误，抛出的协议错误原样交给 `Agent` 捕获。契约测试可以直接用真实 SDK，无需退回到纯 fake。
+
+**A1–A5 实现结论（2026-11-26）**
+
+- 实现位于 `src/integrations/mcp.ts`，测试位于 `src/integrations/mcp.test.ts`（7 项），全量 46 项测试通过。
+- `listTools()` 不传 cursor 时 SDK 自动聚合分页；适配器仍保留游标循环与 100 页上限，以兼容只返回单页的实现和 fake client。
+- SDK 的列表结果默认走缓存，服务端 `tools/list_changed` 会让缓存失效；适配器的 `refresh()` 额外传 `cacheMode: "refresh"` 强制拉取。测试通过包装客户端只在 refresh 时改变 schema，证明该参数确实被传递。
+- 与计划的偏差：无功能性偏差；命名正则的报错文案改为不含锚点的 `[A-Za-z0-9_-]{1,64}`，便于阅读。
 
 `tool.execution.started`/`completed` 的追踪无需改动，现有收集器自动覆盖；A1 测试顺带断言 span 名称。
 

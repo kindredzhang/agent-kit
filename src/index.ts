@@ -23,6 +23,15 @@ export type {
 export { InMemorySessionStore } from "./core/session";
 export type { SessionStore } from "./core/session";
 export { SQLiteSessionStore } from "./storage/sqlite-session";
+export { createMCPToolSource } from "./integrations/mcp";
+export type {
+  MCPToolCallResult,
+  MCPToolClient,
+  MCPToolDescriptor,
+  MCPToolListResult,
+  MCPToolSource,
+  MCPToolSourceOptions,
+} from "./integrations/mcp";
 export { defineTool } from "./core/tools";
 export type {
   AgentTool,

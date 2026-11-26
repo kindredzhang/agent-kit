@@ -105,6 +105,35 @@ if (trace) {
 
 默认只记录运行元数据。可独立开启 `recordInputs` 以记录本段事件中观察到的原始工具参数，或开启 `recordOutputs` 以记录助手正文和成功的工具结果。收集器只读取事件，因此模型请求正文和恢复快照中的载荷不会进入追踪。可通过 `requestModel` 补充模型标识。run 上的用量在终态或暂停事件提供累计值时覆盖为该值，因此同一 run 的分段用量不能直接相加。若宿主提前停止消费事件，仍可调用 `finish()` 得到 `interrupted` 记录。
 
+### MCP 工具接入
+
+`createMCPToolSource()` 把已连接的 MCP 客户端提供的工具转换为 `AgentTool`，复用现有的审批、并行规划、错误回灌、暂停恢复和追踪。适配器只依赖结构化的 `MCPToolClient` 接口（`listTools` / `callTool`），不引入 MCP SDK 运行时依赖；宿主传入官方客户端的实例即可。连接与关闭由宿主负责。
+
+```ts
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Agent, AnthropicMessagesModel, createMCPToolSource } from "./index";
+
+const client = new Client({ name: "my-host", version: "1.0.0" });
+await client.connect(new StdioClientTransport({ command: "my-mcp-server" }));
+
+const mcpTools = await createMCPToolSource(client, { namespace: "files" });
+const agent = new Agent({
+  model: new AnthropicMessagesModel({ client: new Anthropic(), model: "claude-sonnet-5-5" }),
+  tools: mcpTools.tools,
+  approveTool: async ({ tool }) => askTheUser(tool.name),
+});
+```
+
+安全边界：
+
+- **默认所有 MCP 工具都需要审批**，且适配器不把服务端声明的 `readOnlyHint` / `destructiveHint` 传给 Agent 策略。MCP 规范明确注解只是提示、不能作为授权依据；信任远程注解等于让服务端决定哪些工具可以不经审批直接执行。宿主确认服务端可信后，可用 `trustAnnotations: true` 启用注解映射，让只读工具免审批并且可以并行。
+- 工具名默认加 `namespace__` 前缀，避免多个服务端或本地工具重名；与本地工具重名时 `Agent` 构造器会报错。
+- 工具参数由服务端校验；`isError` 结果会作为工具错误回灌模型，协议层异常（如未知工具）同样走现有失败路径。
+- 服务端可以随时改变工具的行为，固定 schema 不代表行为固定；暂停中的 run 在工具定义变化后恢复会被拒绝，但这只保证定义一致，不保证行为一致。
+
+版本：`@modelcontextprotocol/client` 与 `@modelcontextprotocol/server` 2.4.0 仅作为开发依赖用于契约测试；已在 Bun 1.3.14 下验证内存传输、工具列表、调用与错误语义。
+
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
 安装依赖：

@@ -113,7 +113,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 ### 阶段 5：MCP 与子代理
 
-实施计划：[docs/plans/mcp-and-subagents.md](../plans/mcp-and-subagents.md)（已完成 MCP SDK v2 在 Bun 下的兼容性验证）。
+实施计划：[docs/plans/mcp-and-subagents.md](../plans/mcp-and-subagents.md)。MCP 客户端工具接入已完成（`createMCPToolSource`，46 项测试通过）；子代理待实现。
 
 - MCP 只做客户端侧的工具接入：`tools/list` → 适配为 `AgentTool`，`annotations` 直接喂给阶段 1 的审批策略；工具执行错误（`isError: true`）按现有「错误结果回灌模型」路径处理（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。传输先支持 stdio 与 Streamable HTTP。
 - 工具定义变更要做指纹校验，防「工具定义被替换」类攻击（AI SDK 文档明确建议对已审批工具做 fingerprint）（[MCP tools (AI SDK)](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)）。
