@@ -55,3 +55,7 @@ _Avoid_: Permission
 **Tool approval**:
 A decision by the host or a person to allow a Tool call to execute.
 _Avoid_: Tool result
+
+**Subagent**:
+An Agent run started on behalf of a parent Agent run, exposed to that parent as a Tool whose result is the child run's final text.
+_Avoid_: Agent run, handoff

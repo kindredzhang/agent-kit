@@ -134,6 +134,37 @@ const agent = new Agent({
 
 版本：`@modelcontextprotocol/client` 与 `@modelcontextprotocol/server` 2.4.0 仅作为开发依赖用于契约测试；已在 Bun 1.3.14 下验证内存传输、工具列表、调用与错误语义。
 
+### 子代理
+
+`createSubagentTool()` 把一个完整的 Agent 包装成工具：父 Agent 调用它并传入任务描述，工具内部运行一次独立的子 run，把子 run 的最终文本作为工具结果返回。父 Agent 保留控制权，因此作用域、审批、并行规划、错误回灌与追踪都沿用现有工具路径。
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import { Agent, AnthropicMessagesModel, createSubagentTool } from "./index";
+
+const model = new AnthropicMessagesModel({ client: new Anthropic(), model: "claude-sonnet-5-5" });
+const researcher = createSubagentTool({
+  name: "delegate_research",
+  description: "把一段资料检索交给子代理，返回精炼摘要。",
+  createAgent: (depth) => new Agent({ model, instructions: `你是第 ${depth} 层的研究子代理。` }),
+  maxDepth: 3,
+  maxConcurrency: 2,
+  onUsage: (usage) => console.log("subagent usage", usage),
+});
+
+const agent = new Agent({ model, tools: [researcher], maxTurns: 10 });
+```
+
+约定与边界：
+
+- 子 run 只接受以 `agent.completed` 结束。`agent.stopped` 或 `agent.failed` 会变成工具错误，消息包含 `stopReason`（失败时还带原始错误），模型可以决定是否重试；父 run 的终态不受影响。
+- `maxDepth` 默认 3：达到上限时直接抛错，不创建子 Agent。深度沿父子 `AbortSignal` 链传播，因此嵌套调用同一工具也能正确计数。
+- `maxConcurrency` 默认 2，按深度分层限制同一工具实例的并发子 run；超出时排队，排队中的调用可以随父 signal 取消。
+- `createAgent(depth)` 每次调用都应返回新的 `Agent`，避免子 run 之间共享可变状态。
+- 子 run 的追踪与父 run 独立：父事件流不会混入子事件，需要子 run 的追踪时在 `createAgent` 里自行挂 `AgentTraceCollector`。
+- 子代理会放大 token 成本。`onUsage` 上报每个子 run 的累计 usage，但不做跨代理预算；需要总量控制时由宿主自行累计。
+- 工具注解为 `readOnly`，因此不需要审批且可与其它只读工具并行。子代理能否执行有副作用的操作，取决于你在 `createAgent` 里给它配了哪些工具和审批策略。
+
 Anthropic 使用 `AnthropicMessagesModel`；OpenAI Chat Completions 使用 `OpenAIChatCompletionsModel`；OpenAI Responses 使用 `OpenAIResponsesModel`。三种适配器都通过 `LanguageModel` 接口接入同一个 `Agent`。
 
 安装依赖：

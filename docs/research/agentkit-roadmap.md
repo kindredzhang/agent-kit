@@ -111,14 +111,14 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `evaluateToolTrajectory` 按执行开始事件比较轮次与工具名，并报告首个差异。Bun 测试使用固定模型响应验证正序、错序、缺失和额外执行，覆盖并行与审批恢复。([ADK evaluate](https://adk.dev/evaluate/))
 - `recordInputs` 与 `recordOutputs` 默认关闭，宿主可独立开启工具入参、助手正文及成功的工具结果记录。暂停与恢复记录通过 `runId` 关联。
 
-### 阶段 5：MCP 与子代理
+### 阶段 5：MCP 与子代理（已完成）
 
-实施计划：[docs/plans/mcp-and-subagents.md](../plans/mcp-and-subagents.md)。MCP 客户端工具接入已完成（`createMCPToolSource`，46 项测试通过）；子代理待实现。
+实施计划：[docs/plans/mcp-and-subagents.md](../plans/mcp-and-subagents.md)。MCP 客户端工具接入（`createMCPToolSource`）与子代理（`createSubagentTool`）均已完成，全量 55 项测试通过。
 
-- MCP 只做客户端侧的工具接入：`tools/list` → 适配为 `AgentTool`，`annotations` 直接喂给阶段 1 的审批策略；工具执行错误（`isError: true`）按现有「错误结果回灌模型」路径处理（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。传输先支持 stdio 与 Streamable HTTP。
-- 工具定义变更要做指纹校验，防「工具定义被替换」类攻击（AI SDK 文档明确建议对已审批工具做 fingerprint）（[MCP tools (AI SDK)](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)）。
+- MCP 只做客户端侧的工具接入：`tools/list` → 适配为 `AgentTool`，`annotations` 直接喂给阶段 1 的审批策略；工具执行错误（`isError: true`）按现有「错误结果回灌模型」路径处理（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。传输由宿主负责，适配器只依赖结构化客户端接口。
+- 暂停快照已保存工具定义并按 JSON 比较，恢复时工具定义变化会被拒绝，覆盖「工具定义被替换」类攻击面（AI SDK 文档明确建议对已审批工具做 fingerprint）（[MCP tools (AI SDK)](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)）。
 - 子代理**先做 agents-as-tools，不做 handoff**：子代理作为一个工具，输入任务描述、输出摘要，父代理保留控制权与聚合。这正是 OpenAI 对「有界子任务」的推荐用法，且天然复用阶段 1–3 的工具作用域、审批与追踪（[multi-agent](https://openai.github.io/openai-agents-python/multi_agent/)）。
-- 与子代理一同交付三道上限：嵌套深度、并发数、总预算（对照 3 / 20 / `maxBudgetUsd` 的默认值）。没有上限的子代理会瞬间放大成本，且预算必须跨代理共享，否则「预算」只是个装饰。
+- 与子代理一同交付了深度与并发两道硬上限（默认 3 / 2）；**总预算未做**，`onUsage` 只上报单个子 run 的 usage，跨代理预算单独排期。没有上限的子代理会瞬间放大成本，且预算必须跨代理共享，否则「预算」只是个装饰。
 
 ### 明确推迟
 

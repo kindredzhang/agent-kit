@@ -133,7 +133,6 @@ export interface SubagentToolOptions {
   name: string;
   description: string;
   createAgent: (depth: number) => Agent;
-  depth?: number;
   maxDepth?: number;
   maxConcurrency?: number;
   onUsage?: (usage: TokenUsage) => void;
@@ -144,8 +143,8 @@ export function createSubagentTool(options: SubagentToolOptions): AnyAgentTool;
 
 - 内部用 `defineTool` 定义 `{ task: string }` 输入；执行时调用 `createAgent(depth + 1)`，把 `task` 作为唯一 user 消息，透传 `ToolExecutionContext.signal`。
 - 只接受以 `agent.completed` 结束的子 run，返回最终 assistant 文本；`agent.stopped`/`agent.failed` 转为工具错误，消息包含 `stopReason`，模型可以决定是否重试。
-- `depth >= maxDepth`（默认 3）时直接抛错，不创建子 Agent。
-- `maxConcurrency`（默认 2）用进程内信号量限制同一工具实例的并发子 run。
+- 深度只从父子 `AbortSignal` 链推导；`depth >= maxDepth`（默认 3）时直接抛错，不创建子 Agent。
+- `maxConcurrency`（默认 2）按深度分层限制同一工具实例的并发子 run。
 - `onUsage` 上报子 run 的累计 usage，供宿主做成本核算；跨代理预算不在本阶段。
 - 子 run 的追踪与父 run 独立：宿主在 `createAgent` 里自行挂 `AgentTraceCollector`；父事件流不会混入子事件。
 
@@ -153,11 +152,21 @@ export function createSubagentTool(options: SubagentToolOptions): AnyAgentTool;
 
 | 切片 | 内容 | 测试接缝 |
 | --- | --- | --- |
-| B1 | 单层子代理完成：父模型调用工具，子 Agent 完成，父模型收到摘要 | 父 `Agent.stream` + 确定性父子模型 |
-| B2 | 非正常结束：子 run 被取消或失败时工具报错，父 run 仍可完成 | 子 run 的 `stopReason` 出现在工具错误消息中 |
-| B3 | 深度上限与并发上限：超深拒绝；并发第三个调用等待 | 计数断言 + 受控 Promise |
-| B4 | 取消传播：父 `AbortSignal` 中断时子 run 停止且不再调用模型 | 取消后模型调用次数 |
-| B5 | usage 上报与 README 示例 | `onUsage` 收到子 run 累计值 |
+| B1 | 单层子代理完成：父模型调用工具，子 Agent 完成，父模型收到摘要（**已完成**） | 父 `Agent.stream` + 确定性父子模型 |
+| B2 | 非正常结束：子 run 被取消或失败时工具报错，父 run 仍可完成（**已完成**） | 子 run 的 `stopReason` 与原始错误出现在工具错误消息中 |
+| B3 | 深度上限与并发上限：超深拒绝；并发第三个调用等待（**已完成**） | 计数断言 + 受控 Promise |
+| B4 | 取消传播：父 `AbortSignal` 中断时子 run 停止且不再调用模型（**已完成**） | 取消后模型调用次数 |
+| B5 | usage 上报与 README 示例（**已完成**） | `onUsage` 收到子 run 累计值 |
+
+**B1–B5 实现结论（2026-11-26）**
+
+- 实现位于 `src/integrations/subagent.ts`，测试位于 `src/integrations/subagent.test.ts`（9 项），全量 55 项测试通过。
+- 与计划的偏差：
+  1. 草图中的 `depth?: number` 选项被移除，深度只从父 `AbortSignal` 链读取。宿主手动传 `depth` 会与链上真实深度冲突（例如并行调用时各自声称同一层），只保留 `maxDepth` 作为唯一上限来源。
+  2. 并发信号量按深度分桶。全局单池会在嵌套时死锁：父层调用占住名额后等待子层完成，子层又等同一池的空位。分桶后每层独立限额，语义也更接近「同一层最多 N 个并发子 run」。
+  3. 信号量采用名额转移（`release()` 直接把名额交给下一个等待者），而不是先减后加，避免同一 tick 内的新调用与唤醒的等待者同时进入造成超额。
+  4. 子 run 以 `agent.failed` 结束时，工具错误消息带上原始错误文本（`error: <message>`），而不只是 `error`；否则模型和宿主都看不到失败原因。
+- 子代理工具声明 `readOnly: true`，因此免审批且可与其它只读工具并行。这不会放宽权限：子 Agent 能做什么取决于宿主在 `createAgent` 里配置的工具与审批策略。
 
 ---
 

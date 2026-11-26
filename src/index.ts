@@ -32,6 +32,8 @@ export type {
   MCPToolSource,
   MCPToolSourceOptions,
 } from "./integrations/mcp";
+export { createSubagentTool } from "./integrations/subagent";
+export type { SubagentToolOptions } from "./integrations/subagent";
 export { defineTool } from "./core/tools";
 export type {
   AgentTool,
