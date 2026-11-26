@@ -80,6 +80,27 @@ database.close();
 
 当前可恢复点是工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
 
+### 工具重试
+
+工具可以在定义中声明重试策略，让暂时性失败在工具内部恢复，而不是立刻作为错误回灌模型：
+
+```ts
+const fetchPage = defineTool({
+  name: "fetch_page",
+  description: "下载页面",
+  input: z.object({ url: z.string() }),
+  annotations: { readOnly: true, idempotent: true },
+  retry: { maxAttempts: 3, delayMs: 200 },
+  execute: ({ url }) => fetch(url).then((response) => response.text()),
+});
+```
+
+- `maxAttempts` 必填，取值 1–10；`delayMs` 是每次失败后的固定等待，默认立即重试；`shouldRetry` 可按错误决定是否继续，返回 false 时保留当前错误。
+- 重试发生在一次审批之后。获批的工具在重试过程中不会重新请求审批；宿主若要求每次尝试都重新授权，应在工具内部而不是 `retry` 中实现。
+- `AbortError` 和已取消的 run 不会重试；等待期间取消会立即结束。不要在非幂等工具上启用重试：一次失败的调用可能已经产生了副作用。
+- 成功事件和失败事件在 `attempts` 大于 1 时携带尝试次数，追踪中的工具记录也会保存该值。未声明策略的工具保持原有的一次执行语义。
+- `beforeTool` 在整次执行前运行一次，不会为每次重试重复调用。重试耗尽后仍走现有工具错误路径，模型可以决定是否再次调用。
+
 ### 运行前 Hooks
 
 `Agent` 的 `hooks` 可在模型请求和工具执行前检查运行上下文。Hook 可同步执行或返回 Promise；正常返回允许继续，抛错则阻止对应操作。

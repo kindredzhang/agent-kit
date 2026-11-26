@@ -43,6 +43,7 @@ export interface AgentToolTrace extends TraceTiming {
   toolCallId: string;
   name: string;
   status: "completed" | "failed" | "interrupted";
+  attempts?: number;
   input?: JsonObject;
   output?: JsonValue;
 }
@@ -190,6 +191,7 @@ export class AgentTraceCollector {
         if (!tool) break;
         tool.endedAt = now;
         tool.status = event.type === "tool.execution.completed" ? "completed" : "failed";
+        if (event.attempts !== undefined) tool.attempts = event.attempts;
         if (event.type === "tool.execution.completed" && this.recordOutputs) {
           tool.output = structuredClone(event.result);
         }

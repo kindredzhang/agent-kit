@@ -111,8 +111,8 @@ export type AgentEvent =
       reason?: "no_handler" | "rejected" | "handler_failed" | "cancelled";
     }
   | { type: "tool.execution.started"; runId: string; turn: number; toolCallId: string; name: string }
-  | { type: "tool.execution.completed"; runId: string; turn: number; toolCallId: string; name: string; result: JsonValue }
-  | { type: "tool.execution.failed"; runId: string; turn: number; toolCallId: string; name: string; error: Error }
+  | { type: "tool.execution.completed"; runId: string; turn: number; toolCallId: string; name: string; result: JsonValue; attempts?: number }
+  | { type: "tool.execution.failed"; runId: string; turn: number; toolCallId: string; name: string; error: Error; attempts?: number }
   | { type: "usage"; runId: string; turn: number; usage: TokenUsage }
   | { type: "message.completed"; runId: string; turn: number; message: Extract<AgentMessage, { role: "assistant" }> }
   | { type: "turn.completed"; runId: string; turn: number; finishReason: FinishReason }
@@ -184,6 +184,7 @@ interface ToolExecutionOutcome {
   toolCall: AgentToolCall;
   result: JsonValue;
   error?: Error;
+  attempts?: number;
 }
 
 interface ToolExecutionPlan {
@@ -208,6 +209,21 @@ function failedOutcome(toolCall: AgentToolCall, error: unknown): ToolExecutionOu
     result: { name: normalizedError.name, error: normalizedError.message },
     error: normalizedError,
   };
+}
+
+function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("The run was cancelled.", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The run was cancelled.", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function requiresApproval(tool: AnyAgentTool): boolean {
@@ -1131,6 +1147,7 @@ export class Agent {
         toolCallId: outcome.toolCall.id,
         name: outcome.toolCall.name,
         error: outcome.error,
+        ...(outcome.attempts !== undefined ? { attempts: outcome.attempts } : {}),
       };
     }
 
@@ -1141,6 +1158,7 @@ export class Agent {
       toolCallId: outcome.toolCall.id,
       name: outcome.toolCall.name,
       result: outcome.result,
+      ...(outcome.attempts !== undefined ? { attempts: outcome.attempts } : {}),
     };
   }
 
@@ -1151,14 +1169,14 @@ export class Agent {
     budget: AgentBudget,
     signal?: AbortSignal,
   ): Promise<ToolExecutionOutcome> {
+    const context = {
+      runId,
+      turn,
+      toolCallId: plan.toolCall.id,
+      ...(signal ? { signal } : {}),
+    };
+    setBudgetContext(context, budget);
     try {
-      const context = {
-        runId,
-        turn,
-        toolCallId: plan.toolCall.id,
-        ...(signal ? { signal } : {}),
-      };
-      setBudgetContext(context, budget);
       if (this.options.hooks?.beforeTool) {
         await this.options.hooks.beforeTool({
           runId,
@@ -1168,9 +1186,31 @@ export class Agent {
         });
         if (signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
       }
-      const result = await plan.tool.execute(plan.input, context);
 
-      return { toolCall: plan.toolCall, result: toJsonValue(result) };
+      const policy = plan.tool.retry;
+      const maxAttempts = policy?.maxAttempts ?? 1;
+      let attempt = 0;
+      for (;;) {
+        attempt += 1;
+        try {
+          const result = await plan.tool.execute(plan.input, context);
+          return {
+            toolCall: plan.toolCall,
+            result: toJsonValue(result),
+            ...(attempt > 1 ? { attempts: attempt } : {}),
+          };
+        } catch (error) {
+          if (isAbortError(error, signal)) throw error;
+          const retryable = attempt < maxAttempts && (policy!.shouldRetry
+            ? await policy!.shouldRetry({ attempt, maxAttempts, error: toError(error) })
+            : true);
+          if (!retryable) {
+            return { ...failedOutcome(plan.toolCall, error), ...(attempt > 1 ? { attempts: attempt } : {}) };
+          }
+          if (signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
+          if (policy?.delayMs) await abortableDelay(policy.delayMs, signal);
+        }
+      }
     } catch (error) {
       return failedOutcome(plan.toolCall, error);
     }

@@ -44,6 +44,8 @@ export type {
   ToolApprovalHandler,
   ToolApprovalRequest,
   ToolExecutionContext,
+  ToolRetryContext,
+  ToolRetryPolicy,
 } from "./core/tools";
 export { OpenAIChatCompletionsModel } from "./providers/openai/chat-completions";
 export type { OpenAIChatCompletionsModelOptions } from "./providers/openai/chat-completions";
