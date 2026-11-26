@@ -3,6 +3,11 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bun run tsc --noEmit",
+    "examples": "bun run examples/run-all.ts"
+  },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
     "@modelcontextprotocol/server": "^2.4.0",

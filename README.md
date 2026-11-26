@@ -72,6 +72,17 @@ database.close();
 
 只有以 `agent.completed` 结束的 run 会追加 Session；`agent.stopped`、`agent.failed` 和取消的 run 不会写入。压缩只影响当前 run 的模型请求，不会改写已保存历史。若工具已经执行但 run 未完成，该次历史也不会保存，重试时可能再次调用工具。宿主应串行执行同一 `sessionId` 的 run；Store 只保证单次追加批次的原子性，不会协调并发 run 的读取和写入。
 
+### 对着真实模型运行
+
+`examples/` 下有针对真实模型端点的验收示例，覆盖工具循环、结构化输出、审批恢复和崩溃恢复：
+
+```bash
+cp .env.example .env        # 填入 OPENAI_BASE_URL、OPENAI_API_KEY、AGENTKIT_MODEL
+bun run examples            # 或 bun run examples approval
+```
+
+任一示例失败会以非零退出码结束。单元测试用确定性假模型，示例用来验证真实适配器上的流式事件、工具调用 id 与 usage 约定。细节见 [examples/README.md](examples/README.md)。
+
 ### 同一 run 的暂停与恢复
 
 将 `approvalMode` 设为 `"pause"` 后，需要审批的工具会通过 `agent.paused` 暂停，事件包含 JSON 可序列化的 `runState`。宿主取得批准或拒绝结果后调用 `agent.resume({ state, approval: { toolCallId, decision } })`；恢复事件沿用原 `runId`。同一批次有多个待审批工具时，每个决定会逐次暂停和恢复。`max_turns` 停止时，如果还有尚未执行的工具调用，`agent.stopped` 也会提供 `runState`。
