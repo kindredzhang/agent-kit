@@ -197,6 +197,49 @@ if (trace) {
 
 暂停和恢复各自产生带独立 `id` 的追踪记录，并共享 `runId`。评估时按发生顺序传入同一 run 的各段记录。评估严格比较 `tool.execution.started` 对应的轮次与工具名，返回实际序列以及第一个差异的零基索引。这样并行工具的完成顺序不会影响结果。需要在 CI 中断言固定轨迹时，可以用预设响应的 `LanguageModel`。工具是否成功以及 run 是否完成，可以分别通过追踪中的 `status` 断言。
 
+### 批量回归评估
+
+`evaluateAgentCases()` 在一条公开接缝上批量运行用例，并同时断言 **run 是否按预期结束、工具轨迹、最终文本与结构化结果**，而不只是工具调用顺序：
+
+```ts
+import { evaluateAgentCases, observeAgentEvents } from "./index";
+
+const report = await evaluateAgentCases(
+  [
+    {
+      name: "在缺货时停止下单",
+      input: "帮我买那本书",
+      expect: {
+        stopReason: "completed",
+        toolTrajectory: [{ turn: 1, name: "check_stock" }],
+        textIncludes: "缺货",
+      },
+    },
+    {
+      name: "输出经过校验的情绪结果",
+      input: "包装很好，物流也快。",
+      expect: { structuredOutput: { sentiment: "positive", confidence: 0.9 } },
+    },
+  ],
+  async ({ input }, signal) =>
+    observeAgentEvents(agent.stream({ messages: [{ role: "user", content: input }], signal })),
+);
+
+if (!report.passed) {
+  for (const result of report.results.filter(({ passed }) => !passed)) {
+    console.error(result.name, result.failures);
+  }
+}
+```
+
+- 用例只检查声明过的项；`expect` 为 `{}` 表示只跑通、不做断言。
+- 失败不会中断整轮评估：每个用例单独结算，报告给出 `summary` 与逐例 `failures`，可直接在 CI 中按 `passed` 失败退出。
+- `structuredOutput` 按值比较，忽略对象键顺序。
+- 观测函数抛错会转成 `observation` 失败，而不是让整批崩溃。
+- `observeAgentEvents()` 是便捷适配器，把事件流收集为 `stopReason`、`toolTrajectory`、`text`、`structuredOutput` 与 `usage`。需要更多信息时，可自行实现 `AgentEvalObserver`。
+- 用例名必须唯一；重复会在开始前报错。评估器不做并发调度，执行顺序由观测函数决定。
+- 这里评估的是**单次 run 的可观察结果**，不是模型质量评分；它不包含 LLM 裁判或数据集管理。需要判定开放式答案时，可在 `AgentEvalObserver` 中接入自己的裁判模型。
+
 默认只记录运行元数据。可独立开启 `recordInputs` 以记录本段事件中观察到的原始工具参数，或开启 `recordOutputs` 以记录助手正文和成功的工具结果。收集器只读取事件，因此模型请求正文和恢复快照中的载荷不会进入追踪。可通过 `requestModel` 补充模型标识。run 上的用量在终态或暂停事件提供累计值时覆盖为该值，因此同一 run 的分段用量不能直接相加。若宿主提前停止消费事件，仍可调用 `finish()` 得到 `interrupted` 记录。
 
 ### MCP 工具接入

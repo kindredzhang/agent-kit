@@ -56,6 +56,14 @@ _Avoid_: Model retry, run resume
 Repeating a model request that failed before it emitted any output.
 _Avoid_: Tool retry, run resume
 
+**Eval observation**:
+The observable result of one Agent run reduced for assertions: stop reason, tool trajectory, text, structured output, and usage.
+_Avoid_: Trace
+
+**Eval case**:
+A named input with the expectations an eval observation must satisfy.
+_Avoid_: Test
+
 **Tool annotation**:
 A declaration about a Tool's expected behavior, such as whether it reads data, changes state, or can be repeated safely.
 _Avoid_: Permission

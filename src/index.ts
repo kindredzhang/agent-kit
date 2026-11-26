@@ -14,6 +14,16 @@ export type { AgentBudgetOptions, AgentBudgetSnapshot } from "./core/budget";
 export type { RetryContext, RetryPolicy } from "./core/retry";
 export { evaluateToolTrajectory } from "./core/evaluation";
 export type { ToolTrajectoryEvaluation, ToolTrajectoryStep } from "./core/evaluation";
+export { evaluateAgentCases, observeAgentEvents } from "./core/eval";
+export type {
+  AgentEvalCase,
+  AgentEvalExpectation,
+  AgentEvalFailure,
+  AgentEvalObservation,
+  AgentEvalObserver,
+  AgentEvalReport,
+  AgentEvalResult,
+} from "./core/eval";
 export { AgentTraceCollector } from "./core/trace";
 export type {
   AgentApprovalTrace,
