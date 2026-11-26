@@ -96,6 +96,11 @@ export class OpenAIChatCompletionsModel implements LanguageModel {
       const choice = chunk.choices[0];
 
       if (choice) {
+        const reasoning = (choice.delta as { reasoning_content?: string }).reasoning_content;
+        if (reasoning) {
+          yield { type: "reasoning.delta", delta: reasoning };
+        }
+
         if (choice.delta.content) {
           yield { type: "text.delta", delta: choice.delta.content };
         }
