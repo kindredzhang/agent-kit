@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentStopReason } from "./agent";
+import type { AgentBudgetSnapshot } from "./budget";
 import type { FinishReason, JsonObject, JsonValue, ModelProvider, TokenUsage } from "./types";
 import { combineUsage } from "./usage";
 
@@ -16,6 +17,7 @@ export interface AgentTrace extends TraceTiming {
   status: "completed" | "paused" | "stopped" | "failed" | "interrupted";
   stopReason?: AgentStopReason;
   usage?: TokenUsage;
+  budget?: AgentBudgetSnapshot;
   turns: AgentTurnTrace[];
 }
 
@@ -99,6 +101,9 @@ export class AgentTraceCollector {
     const now = this.now();
     const trace = this.trace ??= this.startTrace(event.runId, now);
     switch (event.type) {
+      case "agent.budget.updated":
+        trace.budget = structuredClone(event.budget);
+        return;
       case "agent.completed":
       case "agent.stopped":
       case "agent.failed":

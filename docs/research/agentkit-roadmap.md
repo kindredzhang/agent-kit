@@ -118,7 +118,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - MCP 只做客户端侧的工具接入：`tools/list` → 适配为 `AgentTool`，`annotations` 直接喂给阶段 1 的审批策略；工具执行错误（`isError: true`）按现有「错误结果回灌模型」路径处理（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。传输由宿主负责，适配器只依赖结构化客户端接口。
 - 暂停快照已保存工具定义并按 JSON 比较，恢复时工具定义变化会被拒绝，覆盖「工具定义被替换」类攻击面（AI SDK 文档明确建议对已审批工具做 fingerprint）（[MCP tools (AI SDK)](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)）。
 - 子代理**先做 agents-as-tools，不做 handoff**：子代理作为一个工具，输入任务描述、输出摘要，父代理保留控制权与聚合。这正是 OpenAI 对「有界子任务」的推荐用法，且天然复用阶段 1–3 的工具作用域、审批与追踪（[multi-agent](https://openai.github.io/openai-agents-python/multi_agent/)）。
-- 与子代理一同交付了深度与并发两道硬上限（默认 3 / 2）；**总预算未做**，`onUsage` 只上报单个子 run 的 usage，跨代理预算单独排期。没有上限的子代理会瞬间放大成本，且预算必须跨代理共享，否则「预算」只是个装饰。
+- 与子代理一同交付了深度与并发两道硬上限（默认 3 / 2）。跨代理共享预算已在后续批次完成：`Agent.stream` 的 `budget.maxModelCalls` 与 `maxTotalTokens` 由根 run 和经 `createSubagentTool` 启动的后代共用账本，详见 [docs/plans/shared-agent-budget.md](../plans/shared-agent-budget.md)；`onUsage` 仍只上报单个子 run 的 usage。没有上限的子代理会瞬间放大成本，且预算必须跨代理共享，否则「预算」只是个装饰。
 
 ### 明确推迟
 

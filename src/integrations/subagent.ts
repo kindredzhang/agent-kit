@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineTool } from "../core/tools";
+import { getBudgetContext, setBudgetContext } from "../core/budget";
 import type { AnyAgentTool, ToolExecutionContext } from "../core/tools";
 import type { Agent } from "../core/agent";
 import type { TokenUsage } from "../core/types";
@@ -82,16 +83,20 @@ async function runSubagent(input: {
   agent: Agent;
   task: string;
   signal: AbortSignal;
+  context: ToolExecutionContext;
 }): Promise<SubagentOutcome> {
   let content: string | undefined;
   let stopReason = "no terminal event";
   let error: Error | undefined;
   let usage: TokenUsage | undefined;
 
-  for await (const event of input.agent.stream({
-    messages: [{ role: "user", content: input.task }],
+  const runInput = {
+    messages: [{ role: "user" as const, content: input.task }],
     signal: input.signal,
-  })) {
+  };
+  const budget = getBudgetContext(input.context);
+  if (budget) setBudgetContext(runInput, budget);
+  for await (const event of input.agent.stream(runInput)) {
     switch (event.type) {
       case "agent.completed":
         content = event.message.content;
@@ -161,7 +166,7 @@ export function createSubagentTool(options: SubagentToolOptions): AnyAgentTool {
         subagentDepths.set(child.signal, depth + 1);
 
         try {
-          const outcome = await runSubagent({ agent: options.createAgent(depth + 1), task, signal: child.signal });
+          const outcome = await runSubagent({ agent: options.createAgent(depth + 1), task, signal: child.signal, context });
           if (outcome.usage) options.onUsage?.(outcome.usage);
           if (child.signal.aborted) throw abortError();
           if (outcome.stopReason !== "completed") {

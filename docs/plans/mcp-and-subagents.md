@@ -166,7 +166,7 @@ export function createSubagentTool(options: SubagentToolOptions): AnyAgentTool;
   2. 并发信号量按深度分桶。全局单池会在嵌套时死锁：父层调用占住名额后等待子层完成，子层又等同一池的空位。分桶后每层独立限额，语义也更接近「同一层最多 N 个并发子 run」。
   3. 信号量采用名额转移（`release()` 直接把名额交给下一个等待者），而不是先减后加，避免同一 tick 内的新调用与唤醒的等待者同时进入造成超额。
   4. 子 run 以 `agent.failed` 结束时，工具错误消息带上原始错误文本（`error: <message>`），而不只是 `error`；否则模型和宿主都看不到失败原因。
-- 子代理工具声明 `readOnly: true`，因此免审批且可与其它只读工具并行。这不会放宽权限：子 Agent 能做什么取决于宿主在 `createAgent` 里配置的工具与审批策略。
+- 子代理工具声明 `readOnly: true`，因此父层免审批且可并行调用。子 Agent 使用自己的工具与审批策略；若其配置允许自动执行写操作，父层不会再次审批，宿主必须审查子 Agent 的权限。
 
 ---
 

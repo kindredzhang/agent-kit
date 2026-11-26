@@ -9,6 +9,7 @@ export type {
   MessageDelta,
 } from "./core/agent";
 export type { ContextEstimateInput, ContextTokenEstimator } from "./core/context";
+export type { AgentBudgetOptions, AgentBudgetSnapshot } from "./core/budget";
 export { evaluateToolTrajectory } from "./core/evaluation";
 export type { ToolTrajectoryEvaluation, ToolTrajectoryStep } from "./core/evaluation";
 export { AgentTraceCollector } from "./core/trace";

@@ -1,4 +1,6 @@
 import { ContextManager } from "./context";
+import { AgentBudget, getBudgetContext, setBudgetContext } from "./budget";
+import type { AgentBudgetOptions, AgentBudgetSnapshot } from "./budget";
 import type { ContextTokenEstimator } from "./context";
 import { assertSessionId } from "./session";
 import type { SessionStore } from "./session";
@@ -18,6 +20,7 @@ import type {
 
 export interface AgentRunState {
   version: 1;
+  budget?: AgentBudgetSnapshot;
   runId: string;
   provider: ModelProvider;
   instructions?: string;
@@ -63,11 +66,14 @@ export type AgentStopReason =
   | "cancelled"
   | "length"
   | "context_limit"
+  | "budget_exceeded"
+  | "usage_unavailable"
   | "error";
 
 export type AgentEvent =
   | { type: "agent.started"; runId: string; provider: ModelProvider }
   | { type: "agent.resumed"; runId: string; provider: ModelProvider }
+  | { type: "agent.budget.updated"; runId: string; budget: AgentBudgetSnapshot }
   | { type: "agent.paused"; runId: string; turn: number; pendingToolCall: AgentToolCall; runState: AgentRunState }
   | { type: "turn.started"; runId: string; turn: number }
   | {
@@ -119,7 +125,8 @@ export type AgentEvent =
   | {
       type: "agent.stopped";
       runId: string;
-      stopReason: "max_turns" | "cancelled" | "length" | "context_limit";
+      stopReason: "max_turns" | "cancelled" | "length" | "context_limit" | "budget_exceeded" | "usage_unavailable";
+      budget?: AgentBudgetSnapshot;
       message?: Extract<AgentMessage, { role: "assistant" }>;
       finishReason?: FinishReason;
       usage?: TokenUsage;
@@ -143,6 +150,7 @@ export interface AgentOptions {
 }
 
 export interface AgentRunInput {
+  budget?: AgentBudgetOptions;
   messages: readonly AgentMessage[];
   sessionId?: string;
   signal?: AbortSignal;
@@ -263,8 +271,16 @@ export class Agent {
       : { type: "agent.started", runId, provider: this.options.model.provider };
 
     let totalUsage: TokenUsage | undefined = restoredState?.usage;
+    let currentBudget: AgentBudget | undefined;
 
     try {
+      const inheritedBudget = getBudgetContext(input);
+      const budget = inheritedBudget ?? (restoredState
+        ? restoredState.budget
+          ? new AgentBudget({ maxModelCalls: restoredState.budget.maxModelCalls, maxTotalTokens: restoredState.budget.maxTotalTokens }, restoredState.budget)
+          : new AgentBudget({}, { modelCalls: 0, requestsWithUsage: 0, usage: {}, usageComplete: false })
+        : new AgentBudget(input.budget));
+      currentBudget = budget;
       if (restoredState) {
         this.validateRunState(restoredState);
         messages.push(...restoredState.messages);
@@ -335,6 +351,7 @@ export class Agent {
       );
 
       for (let turn = restoredState?.turn ?? 1; turn <= this.maxTurns; turn += 1) {
+        yield { type: "agent.budget.updated", runId, budget: budget.snapshot() };
         if (input.signal?.aborted) {
           yield {
             type: "agent.stopped",
@@ -401,66 +418,80 @@ export class Agent {
           finishReason = "other";
           toolCalls = [];
 
-          yield { type: "turn.started", runId, turn };
-          yield { type: "message.started", runId, turn, messageId, role: "assistant" };
-
-          for await (const event of this.options.model.stream({
-            messages,
-            tools,
-            maxOutputTokens: this.options.maxOutputTokens,
-            signal: input.signal,
-          })) {
-            switch (event.type) {
-              case "text.delta":
-                content += event.delta;
-                yield {
-                  type: "message.delta",
-                  runId,
-                  turn,
-                  messageId,
-                  delta: { type: "text", text: event.delta },
-                };
-                break;
-              case "reasoning.delta":
-                yield {
-                  type: "message.delta",
-                  runId,
-                  turn,
-                  messageId,
-                  delta: { type: "reasoning", text: event.delta },
-                };
-                break;
-              case "refusal.delta":
-                content += event.delta;
-                yield {
-                  type: "message.delta",
-                  runId,
-                  turn,
-                  messageId,
-                  delta: { type: "refusal", text: event.delta },
-                };
-                break;
-              case "tool.call.started":
-                yield { ...event, runId, turn };
-                break;
-              case "tool.call.arguments.delta":
-                yield { ...event, runId, turn };
-                break;
-              case "tool.call.completed":
-                toolCalls.push(event.toolCall);
-                yield { ...event, runId, turn };
-                break;
-              case "usage":
-                totalUsage = combineUsage(totalUsage, event.usage);
-                yield { ...event, runId, turn };
-                break;
-              case "finish":
-                finishReason = event.finishReason;
-                responseId = event.responseId;
-                break;
-            }
+          const budgetStop = budget.claim();
+          if (budgetStop) {
+            yield { type: "agent.stopped", runId, stopReason: budgetStop, budget: budget.snapshot(),
+              ...(totalUsage ? { usage: totalUsage } : {}) };
+            return;
           }
-
+          let requestUsage: TokenUsage | undefined;
+          let requestCompleted = false;
+          try {
+            yield { type: "turn.started", runId, turn };
+            yield { type: "message.started", runId, turn, messageId, role: "assistant" };
+            for await (const event of this.options.model.stream({
+              messages,
+              tools,
+              maxOutputTokens: this.options.maxOutputTokens,
+              signal: input.signal,
+            })) {
+              switch (event.type) {
+                case "text.delta":
+                  content += event.delta;
+                  yield {
+                    type: "message.delta",
+                    runId,
+                    turn,
+                    messageId,
+                    delta: { type: "text", text: event.delta },
+                  };
+                  break;
+                case "reasoning.delta":
+                  yield {
+                    type: "message.delta",
+                    runId,
+                    turn,
+                    messageId,
+                    delta: { type: "reasoning", text: event.delta },
+                  };
+                  break;
+                case "refusal.delta":
+                  content += event.delta;
+                  yield {
+                    type: "message.delta",
+                    runId,
+                    turn,
+                    messageId,
+                    delta: { type: "refusal", text: event.delta },
+                  };
+                  break;
+                case "tool.call.started":
+                  yield { ...event, runId, turn };
+                  break;
+                case "tool.call.arguments.delta":
+                  yield { ...event, runId, turn };
+                  break;
+                case "tool.call.completed":
+                  toolCalls.push(event.toolCall);
+                  yield { ...event, runId, turn };
+                  break;
+                case "usage":
+                  requestUsage = combineUsage(requestUsage, event.usage);
+                  budget.record(event.usage);
+                  totalUsage = combineUsage(totalUsage, event.usage);
+                  yield { ...event, runId, turn };
+                  break;
+                case "finish":
+                  finishReason = event.finishReason;
+                  responseId = event.responseId;
+                  break;
+              }
+            }
+            requestCompleted = true;
+          } finally {
+            budget.finishRequest(requestUsage, requestCompleted);
+          }
+          yield { type: "agent.budget.updated", runId, budget: budget.snapshot() };
           message = {
             id: messageId,
             role: "assistant",
@@ -517,6 +548,7 @@ export class Agent {
 
         if (turn === this.maxTurns) {
           const runState = this.createRunState({
+            budget: budget.checkpoint(),
             runId,
             sessionId,
             sessionHistory,
@@ -638,6 +670,7 @@ export class Agent {
               if (this.options.approvalMode === "pause") {
                 const pendingApproval = { toolCallId: toolCall.id, approvalId };
                 const runState = this.createRunState({
+                  budget: budget.checkpoint(),
                   runId,
                   sessionId,
                   sessionHistory,
@@ -748,7 +781,7 @@ export class Agent {
               };
               return;
             }
-            const outcome = await this.executeTool(plan, runId, turn, input.signal);
+            const outcome = await this.executeTool(plan, runId, turn, budget, input.signal);
             outcomes[plan.index] = outcome;
             yield this.executionEvent(runId, turn, outcome);
             planIndex += 1;
@@ -784,7 +817,7 @@ export class Agent {
           }
 
           const executions = batch.map((batchPlan, batchIndex) =>
-            this.executeTool(batchPlan, runId, turn, input.signal).then((outcome) => ({
+            this.executeTool(batchPlan, runId, turn, budget, input.signal).then((outcome) => ({
               batchIndex,
               plan: batchPlan,
               outcome,
@@ -803,6 +836,7 @@ export class Agent {
           planIndex = batchEnd;
         }
 
+        yield { type: "agent.budget.updated", runId, budget: budget.snapshot() };
         const toolInteractionMessages: AgentMessage[] = [message];
         for (let index = 0; index < toolCalls.length; index += 1) {
           const outcome = outcomes[index]!;
@@ -819,6 +853,7 @@ export class Agent {
         contextManager.addToolInteraction(toolInteractionMessages);
       }
     } catch (error) {
+      if (currentBudget) yield { type: "agent.budget.updated", runId, budget: currentBudget.snapshot() };
       if (isAbortError(error, input.signal)) {
         yield {
           type: "agent.stopped",
@@ -856,6 +891,7 @@ export class Agent {
   }
 
   private createRunState(input: {
+    budget: AgentBudgetSnapshot;
     runId: string;
     sessionId?: string;
     sessionHistory: readonly AgentMessage[];
@@ -871,6 +907,7 @@ export class Agent {
   }): AgentRunState {
     return structuredClone({
       version: 1 as const,
+      budget: input.budget,
       runId: input.runId,
       provider: this.options.model.provider,
       ...(this.options.instructions !== undefined ? { instructions: this.options.instructions } : {}),
@@ -978,15 +1015,18 @@ export class Agent {
     plan: ToolExecutionPlan,
     runId: string,
     turn: number,
+    budget: AgentBudget,
     signal?: AbortSignal,
   ): Promise<ToolExecutionOutcome> {
     try {
-      const result = await plan.tool.execute(plan.input, {
+      const context = {
         runId,
         turn,
         toolCallId: plan.toolCall.id,
         ...(signal ? { signal } : {}),
-      });
+      };
+      setBudgetContext(context, budget);
+      const result = await plan.tool.execute(plan.input, context);
 
       return { toolCall: plan.toolCall, result: toJsonValue(result) };
     } catch (error) {
