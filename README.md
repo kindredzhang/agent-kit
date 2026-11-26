@@ -78,7 +78,44 @@ database.close();
 
 `AgentRunState` 是未完成 run 的快照，不是 Session。它包含当前消息和工具调用，可能含有用户内容、工具参数与结果；宿主应按敏感数据保护，并在恢复前验证调用者身份、授权及快照来源。宿主还应原子地认领并消费快照，避免并发或重复恢复同一个 run。快照本身不提供签名或 exactly-once 保证；工具副作用应使用外部幂等键。恢复时应提供兼容的模型与 Agent 配置、工具定义和审批策略；Agent 会校验 provider、配置、工具及 Session 历史基线，但宿主仍需确保底层模型部署与自定义上下文估算器实现一致。若快照轮次高于新 Agent 的 `maxTurns`，恢复会再次以 `max_turns` 停止并保留原快照，直到提高轮数上限。
 
-当前可恢复点是工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
+不配置 `runStore` 时，可恢复点只有工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用；配置后还会有运行中的检查点，见下节。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
+
+### 进程崩溃后的持久恢复
+
+前面的 `AgentRunState` 只在暂停或 `max_turns` 时交给宿主，进程崩溃时进行中的 run 不会留下任何快照。配置 `runStore` 后，Agent 会在 run 执行过程中写入检查点：
+
+```ts
+import { Database } from "bun:sqlite";
+import { Agent, SQLiteRunStore } from "./index";
+
+const database = new Database("agentkit.sqlite");
+const runStore = new SQLiteRunStore(database);
+const agent = new Agent({ model, tools, sessionStore, runStore });
+
+for await (const event of agent.stream({ messages, sessionId: "order-42" })) {
+  if (event.type === "agent.checkpointed") {
+    console.log(event.runId, event.turn, event.resumeAt);
+  }
+  if (event.type === "agent.paused") {
+    persistApprovalPrompt(event.runId, event.pendingToolCall);
+  }
+}
+
+// 崩溃后，可能来自另一个进程
+for await (const event of agent.resume({ runId: savedRunId })) {
+  // ...
+}
+```
+
+- 检查点写两次：每轮模型请求前（`resumeAt: "model_turn"`，此时消息已包含此前所有工具结果）和工具批次执行前（`resumeAt: "tool_batch"`，等待参数解析与审批完成）。两者都在没有活跃模型请求时写入，因此可直接复用 `AgentBudget.checkpoint()`。
+- `AgentRunStore` 只有 `save` / `load` / `delete`，一个 `runId` 至多一个检查点，`save` 是覆盖写。`InMemoryRunStore` 用于测试与单进程宿主，`SQLiteRunStore` 与 `SQLiteSessionStore` 风格一致。
+- `agent.resume({ runId })` 从存储载入检查点；`agent.resume({ state, approval })` 的既有用法不变。二者必须且只能提供一个，载入结果必须存在且 `runId` 一致。
+- 清理规则：`agent.completed`、`agent.failed`、以及不带 `runState` 的 `agent.stopped` 会删除检查点；`agent.paused` 与带 `runState` 的 `max_turns` 停止会保留（并刷新）检查点。删除发生在终态事件交给宿主之前。中途放弃消费事件流不算终态，检查点会留下，宿主可显式 `runStore.delete(runId)`。
+- 检查点写入失败会让 run 以 `agent.failed` 结束。持久化是宿主显式要求的语义，静默降级会让宿主误以为存在可恢复点。
+
+**恢复语义是 at-least-once，不是 exactly-once。** 崩溃发生在模型请求期间，最多重发该轮请求；崩溃发生在工具执行期间，整个批次都会重放，包括已经完成的工具。同一批次重放时 `toolCallId` 保持不变，因此它就是天然的幂等键：会产生外部副作用的工具应把 `toolCallId`（或 `runId:toolCallId`）传给下游做原子去重。无法幂等的动作（扣款、发通知）只能依赖下游去重，AgentKit 不提供补偿。
+
+检查点未签名，与 `AgentRunState` 的既有边界一致：宿主必须保护存储、在恢复前鉴权、原子认领并防止并发恢复同一个 `runId`。检查点包含完整消息与工具结果，访问控制与加密由宿主负责。Session 只在 `agent.completed` 时追加；若崩溃恰好发生在「Session 已写入、检查点尚未删除」之间，恢复时的历史基线校验会拒绝该快照，不会重复追加。从 `model_turn` 检查点恢复时，崩溃前那次请求的用量不可知，账本按不完整处理：启用 `maxTotalTokens` 会以 `usage_unavailable` 停止。子代理不继承 `runStore`，父 run 重放子代理工具调用会重新启动子 run。设计细节见 [docs/plans/durable-run-recovery.md](docs/plans/durable-run-recovery.md)。
 
 ### 模型请求重试
 

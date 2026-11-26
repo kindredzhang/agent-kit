@@ -125,6 +125,16 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `Agent` 的 `hooks.beforeModel` / `hooks.beforeTool` 在模型请求和工具实际执行前提供可抛错的检查点。`beforeModel` 位于上下文压缩之后、预算认领之前；`beforeTool` 位于参数解析与审批之后，恢复后的待执行工具会重新检查。Hook 收到副本，不能修改实际请求。它们不向子代理继承，也不进入恢复快照，宿主恢复时需提供一致策略。
 - `outputSchema` 把一个隐式只读 `final_answer` 工具加入模型工具列表，最终结果经本地 Zod 校验后以 `structuredOutput` 返回；校验失败按工具错误回灌模型，未调用时插入一条不写入 Session 的 developer 提醒。实现不依赖厂商原生 JSON 模式，因此三个适配器行为一致，代价是多一次工具往返。设计取舍：只接受单独成轮的输出调用，拒答、截断和 `max_turns` 都不产生结构化结果。
 
+### 阶段 7：进程崩溃后的持久恢复（已完成）
+
+实施计划：[docs/plans/durable-run-recovery.md](../plans/durable-run-recovery.md)。
+
+- `AgentOptions.runStore` 接收 `AgentRunStore`（`save` / `load` / `delete`），提供内存与 SQLite 实现。检查点每轮写两次：模型请求前的 `model_turn` 与工具批次执行前的 `tool_batch`，都在没有活跃模型请求时写入；每次写入发出 `agent.checkpointed`，事件不带快照本体。
+- `Agent.resume({ runId })` 从存储恢复，`Agent.resume({ state, approval })` 保持不变。检查点未签名，与既有 `AgentRunState` 边界一致：宿主负责存储保护、鉴权、原子认领与防并发恢复（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)）。
+- 恢复语义明确为 **at-least-once**：崩溃后重放窗口是「一轮模型请求」或「一个工具批次」。同一批次重放时 `toolCallId` 不变，可直接作为外部幂等键；这与 LangGraph「恢复时节点从头重跑、前置副作用必须幂等」的约束同源（[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。
+- 终态清理：completed / failed / 不可恢复的 stopped 删除检查点，paused 与带 `runState` 的 `max_turns` 保留并刷新。删除先于终态事件送达宿主。写入失败按 run 失败处理，不静默降级。
+- Session 仍在 `agent.completed` 时追加；崩溃若落在「Session 已写、检查点未删」之间，恢复时的历史基线校验会安全拒绝。子代理不继承 `runStore`。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

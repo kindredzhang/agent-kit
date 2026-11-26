@@ -36,6 +36,22 @@ _Avoid_: Agent run
 A snapshot of an unfinished Agent run that can continue from a supported pause point.
 _Avoid_: Session
 
+**Run checkpoint**:
+An Agent run state that an Agent writes to a run store while the run is still executing, so that a crashed process can continue it.
+_Avoid_: Session, backup
+
+**Resume point**:
+Where a checkpoint says the run continues: before the next Model turn, or before a pending Tool batch.
+_Avoid_: Step
+
+**Replay window**:
+The work a recovery re-executes, either one Model turn or one pending Tool batch.
+_Avoid_: Retry
+
+**Idempotency key**:
+A stable identifier for one logical action that a destination uses to reject duplicate execution; for a replayed Tool call it is the Tool call id.
+_Avoid_: Approval
+
 **Tool**:
 A named capability that an Agent can make available to a language model for execution.
 _Avoid_: Function, plugin

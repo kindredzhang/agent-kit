@@ -35,7 +35,10 @@ export type {
 } from "./core/trace";
 export { InMemorySessionStore } from "./core/session";
 export type { SessionStore } from "./core/session";
+export { InMemoryRunStore } from "./core/run-store";
+export type { AgentRunStore } from "./core/run-store";
 export { SQLiteSessionStore } from "./storage/sqlite-session";
+export { SQLiteRunStore } from "./storage/sqlite-run-store";
 export { createMCPToolSource } from "./integrations/mcp";
 export type {
   MCPToolCallResult,

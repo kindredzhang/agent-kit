@@ -7,6 +7,7 @@ import type { RetryPolicy } from "./retry";
 import type { ContextTokenEstimator } from "./context";
 import { assertSessionId } from "./session";
 import type { SessionStore } from "./session";
+import type { AgentRunStore } from "./run-store";
 import { toJsonValue } from "./json";
 import { combineUsage } from "./usage";
 import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools";
@@ -51,10 +52,12 @@ export interface AgentRunState {
     resolved: boolean;
   }[];
   pendingApproval?: { toolCallId: string; approvalId: string };
+  resumeAt?: "model_turn" | "tool_batch";
 }
 
 export interface AgentResumeInput {
-  state: AgentRunState;
+  state?: AgentRunState;
+  runId?: string;
   approval?: { toolCallId: string; decision: "approved" | "rejected" };
   signal?: AbortSignal;
 }
@@ -79,6 +82,7 @@ export type AgentEvent =
   | { type: "agent.started"; runId: string; provider: ModelProvider }
   | { type: "agent.resumed"; runId: string; provider: ModelProvider }
   | { type: "agent.budget.updated"; runId: string; budget: AgentBudgetSnapshot }
+  | { type: "agent.checkpointed"; runId: string; turn: number; resumeAt: "model_turn" | "tool_batch" }
   | { type: "agent.paused"; runId: string; turn: number; pendingToolCall: AgentToolCall; runState: AgentRunState }
   | { type: "turn.started"; runId: string; turn: number }
   | {
@@ -174,6 +178,7 @@ export interface AgentOptions {
   maxContextTokens?: number;
   estimateContextTokens?: ContextTokenEstimator;
   sessionStore?: SessionStore;
+  runStore?: AgentRunStore;
   modelRetry?: RetryPolicy;
 }
 
@@ -283,37 +288,125 @@ export class Agent {
   }
 
   async *stream(input: AgentRunInput): AsyncGenerator<AgentEvent> {
-    yield* this.executeRun(input);
+    const runId = crypto.randomUUID();
+    yield* this.withRunStore(this.executeRun(input, undefined, undefined, runId), runId);
   }
 
   async *resume(input: AgentResumeInput): AsyncGenerator<AgentEvent> {
-    if (!input || typeof input !== "object" || !input.state || typeof input.state !== "object") {
+    if (!input || typeof input !== "object" || (input.state === undefined) === (input.runId === undefined)) {
       yield {
         type: "agent.failed",
-        runId: crypto.randomUUID(),
+        runId: typeof input?.runId === "string" && input.runId.length > 0 ? input.runId : crypto.randomUUID(),
         stopReason: "error",
-        error: new TypeError("A valid Agent run state is required to resume a run."),
+        error: new TypeError("Resuming an Agent run requires exactly one of state or runId."),
       };
       return;
     }
 
-    yield* this.executeRun(
-      {
-        messages: [],
-        ...(input.state.sessionId !== undefined ? { sessionId: input.state.sessionId } : {}),
-        ...(input.signal ? { signal: input.signal } : {}),
-      },
-      input.state,
-      input.approval,
+    let state = input.state;
+    if (input.runId !== undefined) {
+      const store = this.options.runStore;
+      if (!store) {
+        yield {
+          type: "agent.failed",
+          runId: input.runId,
+          stopReason: "error",
+          error: new Error("A runStore must be configured to resume a run by id."),
+        };
+        return;
+      }
+
+      let loaded: AgentRunState | undefined;
+      try {
+        loaded = await store.load(input.runId);
+      } catch (error) {
+        yield { type: "agent.failed", runId: input.runId, stopReason: "error", error: toError(error) };
+        return;
+      }
+      if (!loaded) {
+        yield {
+          type: "agent.failed",
+          runId: input.runId,
+          stopReason: "error",
+          error: new Error(`No checkpoint is stored for run "${input.runId}".`),
+        };
+        return;
+      }
+      if (loaded.runId !== input.runId) {
+        yield {
+          type: "agent.failed",
+          runId: input.runId,
+          stopReason: "error",
+          error: new Error("The stored checkpoint does not belong to the requested run."),
+        };
+        return;
+      }
+      state = loaded;
+    }
+
+    const restored = state!;
+    yield* this.withRunStore(
+      this.executeRun(
+        {
+          messages: [],
+          ...(restored.sessionId !== undefined ? { sessionId: restored.sessionId } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+        },
+        restored,
+        input.approval,
+        restored.runId,
+      ),
+      restored.runId,
     );
+  }
+
+  private async *withRunStore(
+    events: AsyncGenerator<AgentEvent>,
+    runId: string,
+  ): AsyncGenerator<AgentEvent> {
+    const store = this.options.runStore;
+    if (!store) {
+      yield* events;
+      return;
+    }
+
+    for await (const event of events) {
+      if (event.type === "agent.paused") {
+        await store.save(event.runState);
+        yield event;
+        return;
+      }
+      if (event.type === "agent.stopped" && event.runState !== undefined) {
+        await store.save(event.runState);
+        yield event;
+        return;
+      }
+      if (event.type === "agent.completed" || event.type === "agent.stopped" || event.type === "agent.failed") {
+        await store.delete(runId);
+        yield event;
+        return;
+      }
+      yield event;
+    }
+  }
+
+  private async writeCheckpoint(store: AgentRunStore, state: AgentRunState): Promise<AgentEvent> {
+    await store.save(state);
+    return {
+      type: "agent.checkpointed",
+      runId: state.runId,
+      turn: state.turn,
+      resumeAt: state.resumeAt ?? "tool_batch",
+    };
   }
 
   private async *executeRun(
     input: AgentRunInput,
     restoredState?: AgentRunState,
     approval?: AgentResumeInput["approval"],
+    requestedRunId?: string,
   ): AsyncGenerator<AgentEvent> {
-    const runId = restoredState?.runId ?? crypto.randomUUID();
+    const runId = restoredState?.runId ?? requestedRunId ?? crypto.randomUUID();
     const inputMessages = restoredState ? [] : [...input.messages];
     const sessionMessagesToAppend: AgentMessage[] = restoredState ? [] : [...inputMessages];
     const messages: AgentMessage[] = [];
@@ -334,7 +427,12 @@ export class Agent {
       const inheritedBudget = getBudgetContext(input);
       const budget = inheritedBudget ?? (restoredState
         ? restoredState.budget
-          ? new AgentBudget({ maxModelCalls: restoredState.budget.maxModelCalls, maxTotalTokens: restoredState.budget.maxTotalTokens }, restoredState.budget)
+          ? new AgentBudget(
+            { maxModelCalls: restoredState.budget.maxModelCalls, maxTotalTokens: restoredState.budget.maxTotalTokens },
+            restoredState.resumeAt === "model_turn"
+              ? { ...restoredState.budget, usageComplete: false, tokenUsageComplete: false }
+              : restoredState.budget,
+          )
           : new AgentBudget({}, { modelCalls: 0, requestsWithUsage: 0, usage: {}, usageComplete: false })
         : new AgentBudget(input.budget));
       currentBudget = budget;
@@ -355,6 +453,18 @@ export class Agent {
 
         if (restoredState.turn > this.maxTurns) {
           const savedMessage = messages.at(-1);
+          if (restoredState.resumeAt === "model_turn") {
+            yield {
+              type: "agent.stopped",
+              runId,
+              stopReason: "max_turns",
+              finishReason: restoredState.finishReason,
+              ...(totalUsage ? { usage: totalUsage } : {}),
+              ...(restoredState.responseId ? { responseId: restoredState.responseId } : {}),
+              runState: structuredClone(restoredState),
+            };
+            return;
+          }
           if (savedMessage?.role !== "assistant") {
             throw new Error("The saved Agent run state has no pending assistant tool call message.");
           }
@@ -419,7 +529,8 @@ export class Agent {
           return;
         }
 
-        const resumingTurn = restoredState !== undefined && turn === restoredState.turn;
+        const resumingTurn = restoredState !== undefined && restoredState.resumeAt !== "model_turn" &&
+          turn === restoredState.turn;
         const turnApprovalDecisions = resumingTurn ? approvalDecisions : [];
         if (!resumingTurn) {
           const context = contextManager.prepare(messages, tools);
@@ -474,6 +585,24 @@ export class Agent {
           let content = "";
           finishReason = "other";
           toolCalls = [];
+
+          const runStore = this.options.runStore;
+          if (runStore) {
+            yield await this.writeCheckpoint(runStore, this.createRunState({
+              budget: budget.checkpoint(),
+              runId,
+              sessionId,
+              sessionHistory,
+              messages,
+              messagesToAppend: sessionMessagesToAppend,
+              turn,
+              pendingToolCalls: [],
+              finishReason: "other",
+              usage: totalUsage,
+              approvalDecisions: [],
+              resumeAt: "model_turn",
+            }));
+          }
 
           if (this.options.hooks?.beforeModel) {
             await this.options.hooks.beforeModel({
@@ -890,6 +1019,12 @@ export class Agent {
                 decision: approved ? "approved" : "rejected",
                 ...(!approved ? { reason: "rejected" as const } : {}),
               };
+              turnApprovalDecisions.push({
+                toolCallId: toolCall.id,
+                approvalId,
+                decision: approved ? "approved" : "rejected",
+                resolved: true,
+              });
 
               if (!approved) {
                 outcomes[index] = failedOutcome(
@@ -905,6 +1040,24 @@ export class Agent {
         }
 
         let planIndex = 0;
+        const runStore = this.options.runStore;
+        if (runStore && plans.length > 0) {
+          yield await this.writeCheckpoint(runStore, this.createRunState({
+            budget: budget.checkpoint(),
+            runId,
+            sessionId,
+            sessionHistory,
+            messages,
+            messagesToAppend: sessionMessagesToAppend,
+            turn,
+            pendingToolCalls: toolCalls,
+            finishReason,
+            responseId,
+            usage: totalUsage,
+            approvalDecisions: turnApprovalDecisions,
+            resumeAt: "tool_batch",
+          }));
+        }
         while (planIndex < plans.length) {
           if (input.signal?.aborted) {
             yield {
@@ -1088,7 +1241,9 @@ export class Agent {
     usage?: TokenUsage;
     approvalDecisions: readonly AgentRunState["approvalDecisions"][number][];
     pendingApproval?: AgentRunState["pendingApproval"];
+    resumeAt?: AgentRunState["resumeAt"];
   }): AgentRunState {
+    const resumeAt = input.resumeAt ?? (input.pendingToolCalls.length > 0 ? "tool_batch" : undefined);
     return structuredClone({
       version: 1 as const,
       budget: input.budget,
@@ -1112,6 +1267,7 @@ export class Agent {
       ...(input.usage ? { usage: input.usage } : {}),
       approvalDecisions: input.approvalDecisions.map((entry) => ({ ...entry })),
       ...(input.pendingApproval ? { pendingApproval: input.pendingApproval } : {}),
+      ...(resumeAt ? { resumeAt } : {}),
     });
   }
 
@@ -1135,14 +1291,29 @@ export class Agent {
     }
     if (!Number.isSafeInteger(state.turn) || state.turn < 1 || typeof state.finishReason !== "string" ||
       state.finishReason === "length" || state.finishReason === "refusal" ||
+      (state.resumeAt !== undefined && state.resumeAt !== "model_turn" && state.resumeAt !== "tool_batch") ||
       !Array.isArray(state.sessionHistory) || !Array.isArray(state.messages) ||
       !Array.isArray(state.messagesToAppend) || !Array.isArray(state.pendingToolCalls) ||
-      state.pendingToolCalls.length === 0 || !Array.isArray(state.approvalDecisions)) {
+      !Array.isArray(state.approvalDecisions)) {
       throw new TypeError("Agent run state is missing required continuation data.");
     }
     if (state.sessionId !== undefined) assertSessionId(state.sessionId);
     if (state.sessionId === undefined && state.sessionHistory.length > 0) {
       throw new TypeError("Agent run state has session history without a session id.");
+    }
+
+    if (state.resumeAt === "model_turn") {
+      const lastMessage = state.messages.at(-1);
+      if (state.pendingToolCalls.length > 0 || state.approvalDecisions.length > 0 ||
+        state.pendingApproval !== undefined ||
+        (lastMessage?.role === "assistant" && lastMessage.toolCalls !== undefined)) {
+        throw new TypeError("A model-turn checkpoint must not contain pending tool calls.");
+      }
+      return;
+    }
+
+    if (state.pendingToolCalls.length === 0) {
+      throw new TypeError("Agent run state is missing required continuation data.");
     }
 
     const lastMessage = state.messages.at(-1);
