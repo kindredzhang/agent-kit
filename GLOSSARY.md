@@ -52,6 +52,10 @@ _Avoid_: Tool response
 Repeating a failed Tool execution under a policy declared by the Tool definition.
 _Avoid_: Model retry, run resume
 
+**Model request retry**:
+Repeating a model request that failed before it emitted any output.
+_Avoid_: Tool retry, run resume
+
 **Tool annotation**:
 A declaration about a Tool's expected behavior, such as whether it reads data, changes state, or can be repeated safely.
 _Avoid_: Permission

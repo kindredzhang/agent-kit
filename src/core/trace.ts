@@ -25,6 +25,7 @@ export interface AgentTurnTrace extends TraceTiming {
   operation: "step";
   turn: number;
   model?: AgentModelTrace;
+  modelRetries?: number;
   tools: AgentToolTrace[];
   approvals: AgentApprovalTrace[];
   compaction?: { estimatedTokensBefore: number; estimatedTokensAfter: number; removedTurnCount: number };
@@ -149,6 +150,9 @@ export class AgentTraceCollector {
           turn.model.finishReason = event.finishReason;
           turn.model.endedAt = now;
         }
+        break;
+      case "model.request.retrying":
+        turn.modelRetries = (turn.modelRetries ?? 0) + 1;
         break;
       case "tool.call.completed":
         this.inputs.set(event.toolCall.id, structuredClone(event.toolCall.input));

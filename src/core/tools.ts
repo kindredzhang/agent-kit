@@ -1,4 +1,6 @@
 import * as z from "zod";
+import { assertRetryPolicy } from "./retry";
+import type { RetryPolicy } from "./retry";
 import type { AgentToolCall, JsonObject, JsonSchema, ToolDefinition } from "./types";
 
 export interface ToolExecutionContext {
@@ -36,11 +38,7 @@ export interface ToolRetryContext {
   error: Error;
 }
 
-export interface ToolRetryPolicy {
-  maxAttempts: number;
-  delayMs?: number;
-  shouldRetry?: (context: ToolRetryContext) => boolean | Promise<boolean>;
-}
+export type ToolRetryPolicy = RetryPolicy;
 
 export interface AgentTool<TInput = unknown> extends ToolDefinition {
   annotations?: ToolAnnotations;
@@ -51,18 +49,6 @@ export interface AgentTool<TInput = unknown> extends ToolDefinition {
 }
 
 export type AnyAgentTool = AgentTool<any>;
-
-function assertRetryPolicy(policy: ToolRetryPolicy): void {
-  if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > 10) {
-    throw new RangeError("retry.maxAttempts must be an integer between 1 and 10.");
-  }
-  if (policy.delayMs !== undefined && (!Number.isSafeInteger(policy.delayMs) || policy.delayMs < 0)) {
-    throw new RangeError("retry.delayMs must be a non-negative safe integer.");
-  }
-  if (policy.shouldRetry !== undefined && typeof policy.shouldRetry !== "function") {
-    throw new TypeError("retry.shouldRetry must be a function.");
-  }
-}
 
 export function defineTool<TSchema extends z.ZodObject>(definition: {
   name: string;
@@ -77,7 +63,7 @@ export function defineTool<TSchema extends z.ZodObject>(definition: {
     context: ToolExecutionContext,
   ) => unknown | Promise<unknown>;
 }): AgentTool<z.output<TSchema>> {
-  if (definition.retry) assertRetryPolicy(definition.retry);
+  if (definition.retry) assertRetryPolicy(definition.retry, "retry");
   return {
     name: definition.name,
     description: definition.description,

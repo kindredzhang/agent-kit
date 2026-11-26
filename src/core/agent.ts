@@ -2,6 +2,8 @@ import * as z from "zod";
 import { ContextManager } from "./context";
 import { AgentBudget, getBudgetContext, setBudgetContext } from "./budget";
 import type { AgentBudgetOptions, AgentBudgetSnapshot } from "./budget";
+import { abortableDelay, assertRetryPolicy } from "./retry";
+import type { RetryPolicy } from "./retry";
 import type { ContextTokenEstimator } from "./context";
 import { assertSessionId } from "./session";
 import type { SessionStore } from "./session";
@@ -115,6 +117,7 @@ export type AgentEvent =
   | { type: "tool.execution.failed"; runId: string; turn: number; toolCallId: string; name: string; error: Error; attempts?: number }
   | { type: "usage"; runId: string; turn: number; usage: TokenUsage }
   | { type: "message.completed"; runId: string; turn: number; message: Extract<AgentMessage, { role: "assistant" }> }
+  | { type: "model.request.retrying"; runId: string; turn: number; attempt: number; maxAttempts: number; error: Error }
   | { type: "turn.completed"; runId: string; turn: number; finishReason: FinishReason }
   | {
       type: "agent.completed";
@@ -171,6 +174,7 @@ export interface AgentOptions {
   maxContextTokens?: number;
   estimateContextTokens?: ContextTokenEstimator;
   sessionStore?: SessionStore;
+  modelRetry?: RetryPolicy;
 }
 
 export interface AgentRunInput {
@@ -211,21 +215,6 @@ function failedOutcome(toolCall: AgentToolCall, error: unknown): ToolExecutionOu
   };
 }
 
-function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(new DOMException("The run was cancelled.", "AbortError"));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new DOMException("The run was cancelled.", "AbortError"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 function requiresApproval(tool: AnyAgentTool): boolean {
   if (tool.requiresApproval !== undefined) return tool.requiresApproval;
   return tool.annotations?.readOnly !== true || tool.annotations.destructive === true;
@@ -259,6 +248,7 @@ export class Agent {
       (!Number.isSafeInteger(options.maxContextTokens) || options.maxContextTokens < 1)) {
       throw new RangeError("maxContextTokens must be a positive safe integer.");
     }
+    if (options.modelRetry) assertRetryPolicy(options.modelRetry, "modelRetry");
     if (options.outputSchema) {
       this.outputToolName = options.outputToolName ?? "final_answer";
       if (this.outputToolName.length === 0) throw new TypeError("outputToolName must be a non-empty string.");
@@ -503,72 +493,117 @@ export class Agent {
               ...(totalUsage ? { usage: totalUsage } : {}) };
             return;
           }
-          let requestUsage: TokenUsage | undefined;
-          let requestCompleted = false;
-          try {
-            yield { type: "turn.started", runId, turn };
-            yield { type: "message.started", runId, turn, messageId, role: "assistant" };
-            for await (const event of this.options.model.stream({
-              messages,
-              tools,
-              maxOutputTokens: this.options.maxOutputTokens,
-              signal: input.signal,
-            })) {
-              switch (event.type) {
-                case "text.delta":
-                  content += event.delta;
-                  yield {
-                    type: "message.delta",
-                    runId,
-                    turn,
-                    messageId,
-                    delta: { type: "text", text: event.delta },
-                  };
-                  break;
-                case "reasoning.delta":
-                  yield {
-                    type: "message.delta",
-                    runId,
-                    turn,
-                    messageId,
-                    delta: { type: "reasoning", text: event.delta },
-                  };
-                  break;
-                case "refusal.delta":
-                  content += event.delta;
-                  yield {
-                    type: "message.delta",
-                    runId,
-                    turn,
-                    messageId,
-                    delta: { type: "refusal", text: event.delta },
-                  };
-                  break;
-                case "tool.call.started":
-                  yield { ...event, runId, turn };
-                  break;
-                case "tool.call.arguments.delta":
-                  yield { ...event, runId, turn };
-                  break;
-                case "tool.call.completed":
-                  toolCalls.push(event.toolCall);
-                  yield { ...event, runId, turn };
-                  break;
-                case "usage":
-                  requestUsage = combineUsage(requestUsage, event.usage);
-                  budget.record(event.usage);
-                  totalUsage = combineUsage(totalUsage, event.usage);
-                  yield { ...event, runId, turn };
-                  break;
-                case "finish":
-                  finishReason = event.finishReason;
-                  responseId = event.responseId;
-                  break;
+          let attempt = 0;
+          for (;;) {
+            attempt += 1;
+            if (attempt > 1) {
+              const retryStop = budget.claim();
+              if (retryStop) {
+                yield { type: "agent.stopped", runId, stopReason: retryStop, budget: budget.snapshot(),
+                  ...(totalUsage ? { usage: totalUsage } : {}) };
+                return;
               }
             }
-            requestCompleted = true;
-          } finally {
-            budget.finishRequest(requestUsage, requestCompleted);
+
+            let requestUsage: TokenUsage | undefined;
+            let requestCompleted = false;
+            let emitted = false;
+            try {
+              if (attempt === 1) {
+                yield { type: "turn.started", runId, turn };
+                yield { type: "message.started", runId, turn, messageId, role: "assistant" };
+              }
+              for await (const event of this.options.model.stream({
+                messages,
+                tools,
+                maxOutputTokens: this.options.maxOutputTokens,
+                signal: input.signal,
+              })) {
+                if (event.type === "finish") {
+                  finishReason = event.finishReason;
+                  responseId = event.responseId;
+                  continue;
+                }
+
+                emitted = true;
+                switch (event.type) {
+                  case "text.delta":
+                    content += event.delta;
+                    yield {
+                      type: "message.delta",
+                      runId,
+                      turn,
+                      messageId,
+                      delta: { type: "text", text: event.delta },
+                    };
+                    break;
+                  case "reasoning.delta":
+                    yield {
+                      type: "message.delta",
+                      runId,
+                      turn,
+                      messageId,
+                      delta: { type: "reasoning", text: event.delta },
+                    };
+                    break;
+                  case "refusal.delta":
+                    content += event.delta;
+                    yield {
+                      type: "message.delta",
+                      runId,
+                      turn,
+                      messageId,
+                      delta: { type: "refusal", text: event.delta },
+                    };
+                    break;
+                  case "tool.call.started":
+                    yield { ...event, runId, turn };
+                    break;
+                  case "tool.call.arguments.delta":
+                    yield { ...event, runId, turn };
+                    break;
+                  case "tool.call.completed":
+                    toolCalls.push(event.toolCall);
+                    yield { ...event, runId, turn };
+                    break;
+                  case "usage":
+                    requestUsage = combineUsage(requestUsage, event.usage);
+                    budget.record(event.usage);
+                    totalUsage = combineUsage(totalUsage, event.usage);
+                    yield { ...event, runId, turn };
+                    break;
+                }
+              }
+              requestCompleted = true;
+            } catch (error) {
+              if (isAbortError(error, input.signal)) throw error;
+              const policy = this.options.modelRetry;
+              const canRetry = !emitted && policy !== undefined && attempt < policy.maxAttempts &&
+                (!policy.shouldRetry || await policy.shouldRetry({
+                  attempt,
+                  maxAttempts: policy.maxAttempts,
+                  error: toError(error),
+                }));
+              if (!canRetry) throw error;
+
+              yield {
+                type: "model.request.retrying",
+                runId,
+                turn,
+                attempt,
+                maxAttempts: policy.maxAttempts,
+                error: toError(error),
+              };
+              content = "";
+              toolCalls = [];
+              finishReason = "other";
+              responseId = undefined;
+              if (policy.delayMs) await abortableDelay(policy.delayMs, input.signal);
+              continue;
+            } finally {
+              budget.finishRequest(requestUsage, requestCompleted);
+            }
+            break;
           }
           yield { type: "agent.budget.updated", runId, budget: budget.snapshot() };
           message = {
