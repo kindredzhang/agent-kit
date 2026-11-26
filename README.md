@@ -80,6 +80,31 @@ database.close();
 
 当前可恢复点是工具审批暂停，以及 `max_turns` 停止时尚未执行的工具调用。取消或失败的 run 不会自动生成可恢复快照。工具在 run 完成前即使已产生副作用，也不会写入 Session；恢复只能避免重放已保存在快照中的审批决定，不能保证外部副作用恰好执行一次。
 
+### 运行前 Hooks
+
+`Agent` 的 `hooks` 可在模型请求和工具执行前检查运行上下文。Hook 可同步执行或返回 Promise；正常返回允许继续，抛错则阻止对应操作。
+
+```ts
+const agent = new Agent({
+  model,
+  tools: [getWeather],
+  hooks: {
+    beforeModel: ({ messages, turn }) => {
+      if (messages.length > 100) throw new Error(`第 ${turn} 轮的消息数量超限`);
+    },
+    beforeTool: ({ toolCall }) => {
+      if (toolCall.name === "restricted") throw new Error("工具被策略禁止");
+    },
+  },
+});
+```
+
+`beforeModel` 在上下文压缩之后、预算认领和模型调用之前执行；抛错会使 run 以 `agent.failed` 结束，不消耗模型调用名额。它会在每次新模型请求前执行，包括恢复后产生的新请求；恢复已保存的工具调用时不会重放对应的模型 hook。
+
+`beforeTool` 在参数解析和审批通过之后、实际执行工具之前执行；抛错会产生工具失败事件和工具错误结果，模型可据此决定下一步。已拒绝或未获审批的工具不会调用该 hook；恢复后待执行的工具会重新检查。只读工具可能并发执行，其 hook 也可能并发；`tool.execution.started` 表示执行尝试开始，不保证 hook 已放行。取消发生在 hook 等待期间时，hook 返回后不会启动对应的模型或工具调用；hook 应自行响应传入的 `signal`。
+
+Hook 收到的消息、工具定义和原始工具调用是副本，修改它们不会改变实际请求；`beforeTool` 接收模型的原始 JSON 参数，而非工具解析后的值。Hook 不会继承到子代理，宿主应分别配置各个 Agent。它们可以读取敏感内容，应由可信宿主提供；此版本不提供输出过滤，也不阻止已经流出的模型内容。Hook 配置不保存在 run 快照中，恢复时由宿主确保策略符合要求。
+
 ### 追踪与工具轨迹评估
 
 为每次 `agent.stream()` 或 `agent.resume()` 创建一个 `AgentTraceCollector`，并将事件传给 `record()`。`finish()` 返回可序列化的追踪记录，宿主可以写入自己的日志或遥测系统。追踪层级为 run → turn → 模型调用与工具执行，同时记录审批、上下文压缩、用量和运行结果。

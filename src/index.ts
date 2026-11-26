@@ -1,6 +1,7 @@
 export { Agent } from "./core/agent";
 export type {
   AgentEvent,
+  AgentHooks,
   AgentOptions,
   AgentResumeInput,
   AgentRunInput,

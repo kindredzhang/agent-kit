@@ -136,8 +136,26 @@ export type AgentEvent =
     }
   | { type: "agent.failed"; runId: string; stopReason: "error"; error: Error; usage?: TokenUsage };
 
+export interface AgentHooks {
+  beforeModel?: (context: {
+    runId: string;
+    turn: number;
+    messages: readonly AgentMessage[];
+    tools: readonly ToolDefinition[];
+    maxOutputTokens?: number;
+    signal?: AbortSignal;
+  }) => void | Promise<void>;
+  beforeTool?: (context: {
+    runId: string;
+    turn: number;
+    toolCall: AgentToolCall;
+    signal?: AbortSignal;
+  }) => void | Promise<void>;
+}
+
 export interface AgentOptions {
   model: LanguageModel;
+  hooks?: AgentHooks;
   instructions?: string;
   tools?: readonly AnyAgentTool[];
   approveTool?: ToolApprovalHandler;
@@ -417,6 +435,18 @@ export class Agent {
           let content = "";
           finishReason = "other";
           toolCalls = [];
+
+          if (this.options.hooks?.beforeModel) {
+            await this.options.hooks.beforeModel({
+              runId,
+              turn,
+              messages: structuredClone(messages),
+              tools: structuredClone(tools ?? []),
+              ...(this.options.maxOutputTokens !== undefined ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
+              ...(input.signal ? { signal: input.signal } : {}),
+            });
+            if (input.signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
+          }
 
           const budgetStop = budget.claim();
           if (budgetStop) {
@@ -1026,6 +1056,15 @@ export class Agent {
         ...(signal ? { signal } : {}),
       };
       setBudgetContext(context, budget);
+      if (this.options.hooks?.beforeTool) {
+        await this.options.hooks.beforeTool({
+          runId,
+          turn,
+          toolCall: structuredClone(plan.toolCall),
+          ...(signal ? { signal } : {}),
+        });
+        if (signal?.aborted) throw new DOMException("The run was cancelled.", "AbortError");
+      }
       const result = await plan.tool.execute(plan.input, context);
 
       return { toolCall: plan.toolCall, result: toJsonValue(result) };
