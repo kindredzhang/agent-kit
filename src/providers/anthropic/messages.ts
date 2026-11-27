@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
-import { parseJsonObject, stringifyJson } from "../../core/json.js";
+import { parseJsonObject, stringifyJson, toJsonValue } from "../../core/json.js";
 import type {
+  AgentContentPart,
   AgentMessage,
   AgentToolCall,
   FinishReason,
@@ -14,6 +16,7 @@ export interface AnthropicMessagesModelOptions {
   client: Anthropic;
   model: string;
   maxOutputTokens?: number;
+  thinking?: Anthropic.MessageStreamParams["thinking"];
 }
 
 interface ToolBlockState {
@@ -23,8 +26,39 @@ interface ToolBlockState {
   emittedArguments: number;
 }
 
-function toAnthropicMessages(messages: readonly AgentMessage[]): Anthropic.MessageParam[] {
+function toAnthropicContent(part: AgentContentPart): Anthropic.ContentBlockParam {
+  switch (part.type) {
+    case "text":
+      return part;
+    case "image": {
+      const source = part.source;
+      return {
+        type: "image",
+        source: source.type === "url" ? source : { type: "base64", media_type: source.mediaType, data: source.data },
+      };
+    }
+    case "file":
+      return {
+        type: "document",
+        title: part.filename,
+        source: { type: "base64", media_type: part.mediaType, data: part.data },
+      };
+  }
+}
+
+function toAnthropicHistory(
+  messages: readonly AgentMessage[],
+  model: string,
+  system: string,
+  tools: readonly Anthropic.Tool[] | undefined,
+) {
   const converted: Anthropic.MessageParam[] = [];
+  const fingerprint = createHash("sha256").update(JSON.stringify([system, tools]));
+  let lostToolThinking = false;
+  const append = (message: Anthropic.MessageParam) => {
+    converted.push(message);
+    fingerprint.update(JSON.stringify(message));
+  };
 
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!;
@@ -34,20 +68,35 @@ function toAnthropicMessages(messages: readonly AgentMessage[]): Anthropic.Messa
       case "developer":
         break;
       case "user":
-        converted.push({ role: "user", content: message.content });
+        lostToolThinking = false;
+        append({
+          role: "user",
+          content: typeof message.content === "string" ? message.content : message.content.map(toAnthropicContent),
+        });
         break;
       case "assistant": {
-        const content = [];
-        if (message.content) content.push({ type: "text" as const, text: message.content });
+        const continuation = message.continuation;
+        if (continuation?.provider === "anthropic-messages") {
+          const data = continuation.data;
+          if (continuation.model === model && data && typeof data === "object" && !Array.isArray(data) &&
+            Array.isArray(data.content) && data.prefix === fingerprint.copy().digest("hex")) {
+            append({ role: "assistant", content: data.content as unknown as Anthropic.ContentBlockParam[] });
+            break;
+          }
+          lostToolThinking ||= Boolean(message.toolCalls?.length);
+        }
+
+        const content: Anthropic.ContentBlockParam[] = [];
+        if (message.content) content.push({ type: "text", text: message.content });
         for (const toolCall of message.toolCalls ?? []) {
           content.push({
-            type: "tool_use" as const,
+            type: "tool_use",
             id: toolCall.id,
             name: toolCall.name,
             input: toolCall.input,
           });
         }
-        converted.push({ role: "assistant", content });
+        if (content.length > 0) append({ role: "assistant", content });
         break;
       }
       case "tool": {
@@ -70,13 +119,13 @@ function toAnthropicMessages(messages: readonly AgentMessage[]): Anthropic.Messa
           index += 1;
         }
         index -= 1;
-        converted.push({ role: "user", content });
+        append({ role: "user", content });
         break;
       }
     }
   }
 
-  return converted;
+  return { messages: converted, prefix: fingerprint.digest("hex"), lostToolThinking };
 }
 
 function toAnthropicTool(tool: ToolDefinition) {
@@ -113,14 +162,20 @@ export class AnthropicMessagesModel implements LanguageModel {
     const system = request.messages.flatMap((message) =>
       message.role === "system" || message.role === "developer" ? [message.content] : [],
     ).join("\n\n");
-    const stream = this.options.client.messages.stream(
+    const { client, model } = this.options;
+    const tools = request.tools?.length ? request.tools.map(toAnthropicTool) : undefined;
+    const { messages, prefix, lostToolThinking } = toAnthropicHistory(request.messages, model, system, tools);
+    let thinking = this.options.thinking;
+    if (lostToolThinking && thinking?.type === "enabled") thinking = { type: "disabled" };
+    const stream = client.messages.stream(
       {
-        model: this.options.model,
+        model,
         max_tokens:
           request.maxOutputTokens ?? this.options.maxOutputTokens ?? 4096,
-        messages: toAnthropicMessages(request.messages),
+        messages,
         ...(system ? { system } : {}),
-        ...(request.tools?.length ? { tools: request.tools.map(toAnthropicTool) } : {}),
+        ...(tools ? { tools } : {}),
+        ...(thinking ? { thinking } : {}),
       },
       request.signal ? { signal: request.signal } : undefined,
     );
@@ -193,10 +248,15 @@ export class AnthropicMessagesModel implements LanguageModel {
         totalTokens: message.usage.input_tokens + message.usage.output_tokens,
       },
     };
+    const finishReason = mapAnthropicFinishReason(message.stop_reason);
+    const hasThinking = message.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking");
     yield {
       type: "finish",
-      finishReason: mapAnthropicFinishReason(message.stop_reason),
+      finishReason,
       ...(responseId ? { responseId } : {}),
+      ...(hasThinking && finishReason !== "length" ? {
+        continuation: { provider: this.provider, model, data: { prefix, content: toJsonValue(message.content) } },
+      } : {}),
     };
   }
 }

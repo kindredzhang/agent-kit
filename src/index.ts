@@ -75,6 +75,8 @@ export type {
   ToolRetryPolicy,
 } from "./core/tools.js";
 export type {
+  AgentContentPart,
+  AgentImageSource,
   AgentMessage,
   AgentToolCall,
   FinishReason,
@@ -82,6 +84,7 @@ export type {
   JsonSchema,
   JsonValue,
   LanguageModel,
+  ModelContinuation,
   ModelProvider,
   ModelRequest,
   ModelStreamEvent,

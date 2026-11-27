@@ -216,6 +216,18 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - **SQLite 的删除与计数在同一事务内**，用 `changes()` 取实际删除行数。先 `COUNT` 再 `DELETE` 在并发写入下会给出与事实不符的数字，而这个数字正是宿主用来告警的依据。
 - **旧表要能升级**。既有 schema 只有 `CREATE TABLE IF NOT EXISTS`，没有迁移机制。新列通过 `PRAGMA table_info` 检测后 `ALTER TABLE ADD COLUMN`，再从 `request_json` 回填；缺失时间的旧记录回填为 0（排在最前，符合「最老的先被清理」）。
 
+### 阶段 16　工具结果限额（已完成）
+
+`maxToolResultBytes` 在上下文预算检查前限制每条工具结果正文的 UTF-8 字节数。这个位置让大结果保留可用的前缀和工具调用关联。宿主仍可从工具执行事件读取完整结果。
+
+### 阶段 17　推理续接（已完成）
+
+Anthropic Messages 和 OpenAI Responses 将可回放的原生 assistant 输出随消息保存，覆盖工具往返、检查点和会话。Anthropic 只在签名对应的请求前缀一致时回放推理块。OpenAI Responses 使用完成后的加密推理项和原始调用顺序。 [Anthropic Thinking](https://platform.claude.com/docs/en/build-with-claude/thinking) · [OpenAI Reasoning](https://developers.openai.com/api/docs/guides/reasoning)
+
+### 阶段 18　多模态输入（已完成）
+
+统一用户消息支持有序的文本、图片和 PDF。三套适配器各自转换成官方 SDK 格式，会话及检查点保存同一份可序列化内容。上下文估算按媒体部分计入近似开销。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

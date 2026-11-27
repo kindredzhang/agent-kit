@@ -12,7 +12,29 @@ export interface ContextPreparation {
 }
 
 function defaultEstimateContextTokens(request: ContextEstimateInput): number {
-  const serialized = JSON.stringify({ messages: request.messages, tools: request.tools }) ?? "";
+  let mediaTokens = 0;
+  const messages = request.messages.map((message) => {
+    if (message.role === "assistant" && message.continuation !== undefined) {
+      const { continuation, ...portable } = message;
+      return portable;
+    }
+    if (message.role !== "user" || typeof message.content === "string") return message;
+
+    const content = message.content.map((part) => {
+      switch (part.type) {
+        case "text":
+          return part;
+        case "image":
+          mediaTokens += 1_024;
+          return { type: part.type };
+        case "file":
+          mediaTokens += 4_096;
+          return { type: part.type, filename: part.filename };
+      }
+    });
+    return { ...message, content };
+  });
+  const serialized = JSON.stringify({ messages, tools: request.tools }) ?? "";
   let asciiCharacters = 0;
   let otherCharacters = 0;
 
@@ -24,7 +46,7 @@ function defaultEstimateContextTokens(request: ContextEstimateInput): number {
     }
   }
 
-  return Math.ceil(asciiCharacters / 4) + otherCharacters;
+  return Math.ceil(asciiCharacters / 4) + otherCharacters + mediaTokens;
 }
 
 function createConversationTurns(messages: readonly AgentMessage[]): AgentMessage[][] {

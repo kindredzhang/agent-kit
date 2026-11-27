@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import { parseJsonObject, stringifyJson } from "../../core/json.js";
 import type {
+  AgentContentPart,
   AgentMessage,
   AgentToolCall,
   LanguageModel,
@@ -8,7 +9,7 @@ import type {
   ModelStreamEvent,
   ToolDefinition,
 } from "../../core/types.js";
-import { mapOpenAIFinishReason } from "./shared.js";
+import { mapOpenAIFinishReason, toDataUrl, toImageUrl } from "./shared.js";
 
 export interface OpenAIChatCompletionsModelOptions {
   client: OpenAI;
@@ -23,12 +24,27 @@ interface ToolCallAccumulator {
   emittedArguments: number;
 }
 
-function toChatMessage(message: AgentMessage) {
+function toChatContent(part: AgentContentPart): OpenAI.Chat.ChatCompletionContentPart {
+  switch (part.type) {
+    case "text":
+      return part;
+    case "image":
+      return { type: "image_url", image_url: { url: toImageUrl(part.source) } };
+    case "file":
+      return { type: "file", file: { filename: part.filename, file_data: toDataUrl(part.mediaType, part.data) } };
+  }
+}
+
+function toChatMessage(message: AgentMessage): OpenAI.Chat.ChatCompletionMessageParam {
   switch (message.role) {
     case "system":
     case "developer":
-    case "user":
       return { role: message.role, content: message.content };
+    case "user":
+      return {
+        role: "user",
+        content: typeof message.content === "string" ? message.content : message.content.map(toChatContent),
+      };
     case "assistant":
       return {
         role: "assistant" as const,

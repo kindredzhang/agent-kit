@@ -7,13 +7,19 @@ function chunk(delta: Record<string, unknown>, finishReason: string | null = nul
   return { id: "chatcmpl-1", choices: [{ index: 0, delta, finish_reason: finishReason }] };
 }
 
-function modelFrom(chunks: readonly unknown[]): OpenAIChatCompletionsModel {
+function modelFrom(
+  chunks: readonly unknown[],
+  requests: OpenAI.Chat.ChatCompletionCreateParamsStreaming[] = [],
+): OpenAIChatCompletionsModel {
   const client = {
     chat: {
       completions: {
-        create: async () => (async function* () {
-          for (const item of chunks) yield item;
-        })(),
+        create: async (request: OpenAI.Chat.ChatCompletionCreateParamsStreaming) => {
+          requests.push(request);
+          return (async function* () {
+            yield* chunks;
+          })();
+        },
       },
     },
   } as unknown as OpenAI;
@@ -82,4 +88,24 @@ test("assembles streamed tool call arguments into one completed call", async () 
 test("maps content_filter to a refusal finish reason", async () => {
   const events = await collect(modelFrom([chunk({ content: "" }, "content_filter")]));
   expect(events.at(-1)).toMatchObject({ type: "finish", finishReason: "refusal" });
+});
+
+test("sends ordered text, URL and base64 images, and a PDF to Chat Completions", async () => {
+  const requests: OpenAI.Chat.ChatCompletionCreateParamsStreaming[] = [];
+  const model = modelFrom([chunk({ content: "Done." }, "stop")], requests);
+  const imageData = btoa("image");
+  const pdfData = btoa("pdf");
+  await collect(model, { messages: [{ role: "user", content: [
+    { type: "text", text: "Compare these." },
+    { type: "image", source: { type: "url", url: "https://example.com/image.png" } },
+    { type: "file", mediaType: "application/pdf", filename: "report.pdf", data: pdfData },
+    { type: "image", source: { type: "base64", mediaType: "image/png", data: imageData } },
+  ] }] });
+
+  expect(requests[0]?.messages).toEqual([{ role: "user", content: [
+    { type: "text", text: "Compare these." },
+    { type: "image_url", image_url: { url: "https://example.com/image.png" } },
+    { type: "file", file: { filename: "report.pdf", file_data: `data:application/pdf;base64,${pdfData}` } },
+    { type: "image_url", image_url: { url: `data:image/png;base64,${imageData}` } },
+  ] }]);
 });

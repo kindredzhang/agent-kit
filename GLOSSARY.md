@@ -72,6 +72,10 @@ _Avoid_: Approval
 A concrete `LanguageModel` implementation that translates between one vendor SDK's messages and stream events and the core types. Adapters are published on subpath exports so the core entry point stays free of vendor SDK types.
 _Avoid_: Provider, plugin
 
+**Model continuation**:
+Adapter-owned state returned by a model that can be replayed with the corresponding assistant turn in a later request.
+_Avoid_: Reasoning delta, Run checkpoint
+
 **Tool**:
 A named capability that an Agent can make available to a language model for execution.
 _Avoid_: Function, plugin

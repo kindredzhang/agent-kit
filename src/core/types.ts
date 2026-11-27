@@ -33,9 +33,25 @@ export interface ToolDefinition {
   strict?: boolean;
 }
 
+export interface ModelContinuation {
+  provider: ModelProvider;
+  model: string;
+  data: JsonValue;
+}
+
+export type AgentImageSource =
+  | { type: "url"; url: string }
+  | { type: "base64"; mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; data: string };
+
+export type AgentContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; source: AgentImageSource }
+  | { type: "file"; mediaType: "application/pdf"; filename: string; data: string };
+
 export type AgentMessage =
-  | { id?: string; role: "system" | "developer" | "user"; content: string }
-  | { id?: string; role: "assistant"; content: string; toolCalls?: AgentToolCall[] }
+  | { id?: string; role: "system" | "developer"; content: string }
+  | { id?: string; role: "user"; content: string | readonly AgentContentPart[] }
+  | { id?: string; role: "assistant"; content: string; toolCalls?: AgentToolCall[]; continuation?: ModelContinuation }
   | { id?: string; role: "tool"; toolCallId: string; content: JsonValue; isError?: boolean };
 
 export interface ModelRequest {
@@ -53,7 +69,7 @@ export type ModelStreamEvent =
   | { type: "tool.call.arguments.delta"; toolCallId: string; delta: string }
   | { type: "tool.call.completed"; toolCall: AgentToolCall }
   | { type: "usage"; usage: TokenUsage }
-  | { type: "finish"; finishReason: FinishReason; responseId?: string };
+  | { type: "finish"; finishReason: FinishReason; responseId?: string; continuation?: ModelContinuation };
 
 export interface LanguageModel {
   readonly provider: ModelProvider;

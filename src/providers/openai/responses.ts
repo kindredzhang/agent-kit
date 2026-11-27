@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
-import { parseJsonObject, stringifyJson } from "../../core/json.js";
+import { parseJsonObject, stringifyJson, toJsonValue } from "../../core/json.js";
 import type {
+  AgentContentPart,
   AgentMessage,
   AgentToolCall,
   FinishReason,
@@ -9,10 +10,13 @@ import type {
   ModelStreamEvent,
   ToolDefinition,
 } from "../../core/types.js";
+import { toDataUrl, toImageUrl } from "./shared.js";
 
 export interface OpenAIResponsesModelOptions {
   client: OpenAI;
   model: string;
+  reasoning?: OpenAI.Responses.ResponseCreateParams["reasoning"];
+  store?: boolean;
 }
 
 interface FunctionCallState {
@@ -23,14 +27,33 @@ interface FunctionCallState {
   emittedArguments: number;
 }
 
-function toResponsesInput(messages: readonly AgentMessage[]): OpenAI.Responses.ResponseInput {
+function toResponsesContent(part: AgentContentPart): OpenAI.Responses.ResponseInputContent {
+  switch (part.type) {
+    case "text":
+      return { type: "input_text", text: part.text };
+    case "image":
+      return { type: "input_image", image_url: toImageUrl(part.source), detail: "auto" };
+    case "file":
+      return { type: "input_file", filename: part.filename, file_data: toDataUrl(part.mediaType, part.data) };
+  }
+}
+
+function toResponsesInput(messages: readonly AgentMessage[], model: string): OpenAI.Responses.ResponseInput {
   return messages.flatMap((message): OpenAI.Responses.ResponseInputItem[] => {
     switch (message.role) {
       case "system":
       case "developer":
-      case "user":
         return [{ role: message.role, content: message.content }];
-      case "assistant":
+      case "user":
+        return [{
+          role: "user",
+          content: typeof message.content === "string" ? message.content : message.content.map(toResponsesContent),
+        }];
+      case "assistant": {
+        const continuation = message.continuation;
+        if (continuation?.provider === "openai-responses" && continuation.model === model && Array.isArray(continuation.data)) {
+          return continuation.data as unknown as OpenAI.Responses.ResponseInputItem[];
+        }
         return [
           ...(message.content ? [{ role: "assistant" as const, content: message.content }] : []),
           ...(message.toolCalls ?? []).map((toolCall) => ({
@@ -40,6 +63,7 @@ function toResponsesInput(messages: readonly AgentMessage[]): OpenAI.Responses.R
             arguments: JSON.stringify(toolCall.input),
           })),
         ];
+      }
       case "tool":
         return [
           {
@@ -68,10 +92,14 @@ export class OpenAIResponsesModel implements LanguageModel {
   constructor(private readonly options: OpenAIResponsesModelOptions) {}
 
   async *stream(request: ModelRequest): AsyncGenerator<ModelStreamEvent> {
-    const stream = await this.options.client.responses.create(
+    const { client, model, reasoning, store } = this.options;
+    const stream = await client.responses.create(
       {
-        model: this.options.model,
-        input: toResponsesInput(request.messages),
+        model,
+        input: toResponsesInput(request.messages, model),
+        ...(reasoning ? { reasoning } : {}),
+        ...(store !== undefined ? { store } : {}),
+        ...(store === false ? { include: ["reasoning.encrypted_content"] } : {}),
         ...(request.tools?.length ? { tools: request.tools.map(toResponsesTool) } : {}),
         ...(request.maxOutputTokens !== undefined
           ? { max_output_tokens: request.maxOutputTokens }
@@ -82,6 +110,8 @@ export class OpenAIResponsesModel implements LanguageModel {
     );
 
     const callsByItemId = new Map<string, FunctionCallState>();
+    const completedItems = new Map<number, OpenAI.Responses.ResponseOutputItem>();
+    let completedOutput: OpenAI.Responses.ResponseOutputItem[] | undefined;
     let finishReason: FinishReason = "other";
     let responseIncomplete = false;
     let responseId: string | undefined;
@@ -141,6 +171,7 @@ export class OpenAIResponsesModel implements LanguageModel {
           break;
         }
         case "response.output_item.done":
+          completedItems.set(event.output_index, event.item);
           if (event.item.type === "function_call") {
             const itemId = event.item.id ?? event.item.call_id ?? `item_${event.output_index}`;
             const callId = event.item.call_id ?? event.item.id ?? `call_${event.output_index}`;
@@ -186,6 +217,12 @@ export class OpenAIResponsesModel implements LanguageModel {
         case "response.completed":
           responseId = event.response.id;
           finishReason = "stop";
+          completedOutput = event.response.output?.length
+            ? event.response.output.map((item, index) => {
+              if (item.type === "reasoning" && item.encrypted_content) return item;
+              return completedItems.get(index) ?? item;
+            })
+            : [...completedItems.entries()].sort(([left], [right]) => left - right).map(([, item]) => item);
           if (event.response.usage) {
             yield {
               type: "usage",
@@ -223,10 +260,17 @@ export class OpenAIResponsesModel implements LanguageModel {
       finishReason = "tool_calls";
     }
 
+    const replay = completedOutput?.filter((item) =>
+      item.type === "message" || item.type === "function_call" ||
+      (item.type === "reasoning" && Boolean(item.encrypted_content)),
+    );
     yield {
       type: "finish",
       finishReason,
       ...(responseId ? { responseId } : {}),
+      ...(!responseIncomplete && replay?.some((item) => item.type === "reasoning") ? {
+        continuation: { provider: this.provider, model, data: toJsonValue(replay) },
+      } : {}),
     };
   }
 }

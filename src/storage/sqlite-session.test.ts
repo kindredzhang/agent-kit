@@ -18,6 +18,11 @@ test("persists isolated session histories across database connections", async ()
     },
     { role: "tool", toolCallId: "call_1", content: { found: true } },
     { role: "assistant", content: "Found it." },
+    { role: "user", content: [
+      { type: "image", source: { type: "url", url: "https://example.com/image.png" } },
+      { type: "text", text: "Compare it with this." },
+      { type: "file", mediaType: "application/pdf", filename: "report.pdf", data: btoa("pdf") },
+    ] },
   ];
 
   try {

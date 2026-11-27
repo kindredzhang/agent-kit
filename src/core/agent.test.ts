@@ -5,7 +5,7 @@ import { InMemorySessionStore } from "./session.js";
 import type { SessionStore } from "./session.js";
 import { defineTool } from "./tools.js";
 import { z } from "zod";
-import type { LanguageModel, ModelRequest, ModelStreamEvent } from "./types.js";
+import type { AgentMessage, LanguageModel, ModelRequest, ModelStreamEvent } from "./types.js";
 
 function createModel(events: readonly ModelStreamEvent[]): LanguageModel {
   return {
@@ -1140,6 +1140,32 @@ test("uses the default estimator when a context budget is configured", async () 
   if (terminal?.type === "agent.stopped") {
     expect(terminal.context?.estimatedTokens).toBeGreaterThan(1);
   }
+});
+
+test("estimates media within the context budget without treating base64 bytes as text", async () => {
+  const media: AgentMessage = { role: "user", content: [
+    { type: "text", text: "Compare the image and document." },
+    { type: "image", source: { type: "base64", mediaType: "image/png", data: btoa("image".repeat(10_000)) } },
+    { type: "file", mediaType: "application/pdf", filename: "report.pdf", data: btoa("pdf".repeat(10_000)) },
+  ] };
+  const seen: AgentMessage[] = [];
+  const model: LanguageModel = {
+    provider: "openai-chat-completions",
+    async *stream({ messages }) {
+      seen.push(...messages);
+      yield { type: "finish", finishReason: "stop" };
+    },
+  };
+
+  const small = new Agent({ model, maxContextTokens: 1_000 });
+  const stopped = await Array.fromAsync(small.stream({ messages: [media] }));
+  expect(stopped.at(-1)).toMatchObject({ type: "agent.stopped", stopReason: "context_limit" });
+  expect(seen).toEqual([]);
+
+  const large = new Agent({ model, maxContextTokens: 6_000 });
+  const completed = await Array.fromAsync(large.stream({ messages: [media] }));
+  expect(completed.at(-1)).toMatchObject({ type: "agent.completed" });
+  expect(seen).toEqual([media]);
 });
 
 test("requires a positive integer context budget", () => {

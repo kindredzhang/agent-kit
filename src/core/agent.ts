@@ -9,6 +9,7 @@ import { assertSessionId } from "./session.js";
 import type { SessionStore } from "./session.js";
 import type { AgentRunStore } from "./run-store.js";
 import { toJsonValue } from "./json.js";
+import { limitToolMessage } from "./tool-result.js";
 import { combineUsage } from "./usage.js";
 import type { AnyAgentTool, ToolAnnotations, ToolApprovalHandler } from "./tools.js";
 import type {
@@ -19,6 +20,7 @@ import type {
   JsonSchema,
   JsonValue,
   LanguageModel,
+  ModelContinuation,
   ModelProvider,
   TokenUsage,
   ToolDefinition,
@@ -176,6 +178,7 @@ export interface AgentOptions {
   maxOutputTokens?: number;
   maxTurns?: number;
   maxContextTokens?: number;
+  maxToolResultBytes?: number;
   estimateContextTokens?: ContextTokenEstimator;
   sessionStore?: SessionStore;
   runStore?: AgentRunStore;
@@ -280,6 +283,10 @@ export class Agent {
     if (options.maxContextTokens !== undefined &&
       (!Number.isSafeInteger(options.maxContextTokens) || options.maxContextTokens < 1)) {
       throw new RangeError("maxContextTokens must be a positive safe integer.");
+    }
+    if (options.maxToolResultBytes !== undefined &&
+      (!Number.isSafeInteger(options.maxToolResultBytes) || options.maxToolResultBytes < 1)) {
+      throw new RangeError("maxToolResultBytes must be a positive safe integer.");
     }
     if (options.modelRetry) assertRetryPolicy(options.modelRetry, "modelRetry");
     if (options.outputSchema) {
@@ -549,6 +556,13 @@ export class Agent {
         }
       }
 
+      const maxToolResultBytes = this.options.maxToolResultBytes;
+      if (maxToolResultBytes !== undefined) {
+        for (const [index, message] of messages.entries()) {
+          messages[index] = limitToolMessage(message, maxToolResultBytes);
+        }
+      }
+
       const contextManager = new ContextManager(
         this.options.maxContextTokens,
         this.options.estimateContextTokens,
@@ -621,6 +635,7 @@ export class Agent {
         } else {
           const messageId = crypto.randomUUID();
           let content = "";
+          let continuation: ModelContinuation | undefined;
           finishReason = "other";
           toolCalls = [];
 
@@ -689,6 +704,7 @@ export class Agent {
                 if (event.type === "finish") {
                   finishReason = event.finishReason;
                   responseId = event.responseId;
+                  continuation = event.continuation;
                   continue;
                 }
 
@@ -765,6 +781,7 @@ export class Agent {
               toolCalls = [];
               finishReason = "other";
               responseId = undefined;
+              continuation = undefined;
               if (policy.delayMs) await abortableDelay(policy.delayMs, runSignal);
               continue;
             } finally {
@@ -778,6 +795,7 @@ export class Agent {
             role: "assistant",
             content,
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
+            ...(continuation !== undefined ? { continuation } : {}),
           };
           messages.push(message);
           sessionMessagesToAppend.push(message);
@@ -1191,12 +1209,12 @@ export class Agent {
         const toolInteractionMessages: AgentMessage[] = [message];
         for (let index = 0; index < toolCalls.length; index += 1) {
           const outcome = outcomes[index]!;
-          const toolMessage: AgentMessage = {
+          const toolMessage = limitToolMessage({
             role: "tool",
             toolCallId: outcome.toolCall.id,
             content: outcome.result,
             ...(outcome.error ? { isError: true } : {}),
-          };
+          }, maxToolResultBytes);
           messages.push(toolMessage);
           sessionMessagesToAppend.push(toolMessage);
           toolInteractionMessages.push(toolMessage);
