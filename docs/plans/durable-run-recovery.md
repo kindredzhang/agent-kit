@@ -31,7 +31,7 @@
 | --- | --- | --- |
 | [OpenAI Agents SDK · human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/) | `RunState` 可 JSON 序列化；反序列化**不认证**快照或其提交者；审批只表示允许执行，**不保证 exactly-once**；进程在外部副作用之后、保存状态之前崩溃，从旧快照恢复会重复执行；建议为每个逻辑动作分配稳定幂等键，并要求目标端原子去重 | 检查点必须沿用「未签名、宿主负责鉴权」的既有边界；幂等键要在工具执行上下文里天然稳定 |
 | [LangGraph · interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) | `interrupt()` 暂停后以同一 `thread_id` 恢复时**节点从头重跑**，因此 interrupt 之前的副作用必须幂等 | 恢复点越靠近副作用，重跑的范围越小；本计划用「模型轮次前」与「工具批次前」两个位置把重跑范围压到最小 |
-| 本项目既有约束（[README](../../README.md)、[shared-agent-budget.md](./shared-agent-budget.md)） | `AgentRunState` 未签名、不保证 exactly-once；`AgentBudget.checkpoint()` 在有活跃模型请求时拒绝快照；Session 只在 `agent.completed` 时追加，且单次追加批次原子 | 检查点只能写在两个模型请求之间；写入失败必须让 run 失败，不能假装持久化成功 |
+| 本项目既有约束（[会话与恢复](../guide.md#会话与恢复)、[shared-agent-budget.md](./shared-agent-budget.md)） | `AgentRunState` 未签名、不保证 exactly-once；`AgentBudget.checkpoint()` 在有活跃模型请求时拒绝快照；Session 只在 `agent.completed` 时追加，且单次追加批次原子 | 检查点只能写在两个模型请求之间；写入失败必须让 run 失败，不能假装持久化成功 |
 
 ## 3. 领域
 
