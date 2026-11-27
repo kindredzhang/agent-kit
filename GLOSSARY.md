@@ -127,3 +127,11 @@ _Avoid_: JSON mode, response format
 **Output tool**:
 The implicit Tool an Agent exposes to a model so that a final structured answer arrives as a Tool call.
 _Avoid_: Final answer
+
+**Fake model**:
+A LanguageModel whose responses come from a host-written script instead of a provider, so Agent behavior can be tested without a network or an API key.
+_Avoid_: Mock, stub
+
+**Scripted turn**:
+One entry in a Fake model's script describing what the model replies on a single Model turn, including text, Tool calls, usage, or a scripted failure.
+_Avoid_: Fixture, response

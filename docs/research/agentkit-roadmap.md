@@ -185,6 +185,16 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - 采集器按 `record()` 调用时刻打时间戳，这一点在导出时才暴露出来：先把事件收集成数组再回放，所有 span 时长会塌成零。README 已写明要边流边记。
 - `verify-package` 增加了双向检查：没装 `@opentelemetry/api` 时 `agent-kit/otel` 必须报 `ERR_MODULE_NOT_FOUND`，装上后必须能导出真实 span 并通过 `nodenext` 类型检查。负向检查做过实证，不是空转。
 
+### 阶段 13：假模型（已完成）
+
+核心行为一直靠测试文件里手写的 `LanguageModel` 假对象验证，但每个测试文件都重写一遍流式分片、工具调用 id、终态推导，而且宿主要测自己的工具时同样得从头写。这一阶段把这套东西抽成公开子路径 `agent-kit/testing` 的 `createFakeModel()`。
+
+- **以「轮」为脚本单位，不以事件为单位**。使用者脑子里想的是「这一轮模型说什么」，不是「先发 3 个 text.delta 再发 finish」。分片、id 生成、`finishReason` 推导都属于实现细节，由假模型负责。
+- **脚本用尽必须报错，不能重复最后一轮**。静默重复是最容易写出来的"友好"行为，但它会让「Agent 是否多发了一次模型请求」这类断言永远为真——测试会意外通过，而不是失败。现在第二十次请求会得到 `The fake model has no scripted turn for request N.`。
+- **`error` 与 `hang` 是一等公民**。重试、超时、取消这几条路径正是宿主最难自测的，所以脚本项可以直接抛错，或挂起到 `signal` abort 为止。`hang` 的实现只监听 abort 而不做别的，保证测的是 Agent 的取消逻辑而不是假模型的计时器。
+- **`model.requests` 暴露完整请求**。断言「Agent 到底把什么发给了模型」是宿主的常见需求（系统提示是否拼对、工具结果是否回灌、压缩是否生效），所以假模型保留每次收到的 `ModelRequest`，`messages` 做浅拷贝以免后续变更影响历史记录。
+- **不校验工具参数 schema**。校验是被测 Agent 的职责；假模型若也校验一遍，就等于把待测逻辑复制进测试替身，两边同时出错时会互相掩盖。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |
@@ -201,7 +211,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 ## 4. 给实现的几条硬约束
 
-1. **核心行为通过公开的 `Agent.stream()` 和 `Agent.resume()` 测试**。使用确定性的 `LanguageModel` 假实现验证厂商无关的行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
+1. **核心行为通过公开的 `Agent.stream()` 和 `Agent.resume()` 测试**。使用 `agent-kit/testing` 的 `createFakeModel()` 或等价的确定性假实现验证厂商无关的行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
 2. **运行状态通过事件观察**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别）；审批、压缩与限额等运行状态通过事件暴露，宿主策略回调提供决定，但不替代事件时间线。
 3. **`ToolExecutionContext` 需要扩张而不是被替换**：宿主工具确有需要时可增加 `sessionId`、`approvalId`；`runState` 引用留待暂停/恢复方案确定后再加入，保持现在的 `runId/turn/toolCallId/signal`。
 4. **不要把 `finishReason` 当终止原因用**。AI SDK 的文档已经踩过这个坑：`finishReason` 只是最后一次模型调用，循环是否因步数或审批而停，必须由独立的终止原因表达（[loop control](https://ai-sdk.dev/docs/agents/loop-control)）。

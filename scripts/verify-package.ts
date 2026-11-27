@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const entryPoints = ["index", "openai", "anthropic", "otel"];
+const entryPoints = ["index", "openai", "anthropic", "otel", "testing"];
 const optionalPeers = ["openai", "@anthropic-ai/sdk", "@opentelemetry/api"];
 const requiredFiles = entryPoints.flatMap((name) => [`${name}.js`, `${name}.d.ts`]);
 
@@ -195,6 +195,13 @@ const { Agent, defineTool, AgentApprovalQueue, SQLiteRunStore } = await import("
 for (const [name, value] of Object.entries({ Agent, defineTool, AgentApprovalQueue, SQLiteRunStore })) {
   if (typeof value !== "function") throw new Error(\`agent-kit did not export a constructor for \${name}\`);
 }
+const { createFakeModel } = await import("agent-kit/testing");
+const fake = createFakeModel({ turns: [{ text: "hi" }] });
+const fakeEvents = [];
+for await (const event of new Agent({ model: fake }).stream({ messages: [{ role: "user", content: "hi" }] })) {
+  fakeEvents.push(event);
+}
+if (fakeEvents.at(-1)?.type !== "agent.completed") throw new Error("agent-kit/testing did not drive a run to completion");
 const { OpenAIChatCompletionsModel } = await import("agent-kit/openai");
 const { AnthropicMessagesModel } = await import("agent-kit/anthropic");
 if (typeof OpenAIChatCompletionsModel !== "function") throw new Error("agent-kit/openai is missing OpenAIChatCompletionsModel");

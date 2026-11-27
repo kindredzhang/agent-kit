@@ -24,6 +24,10 @@
     "./otel": {
       "types": "./dist/otel.d.ts",
       "import": "./dist/otel.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "types": "./dist/index.d.ts",

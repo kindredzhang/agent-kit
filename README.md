@@ -472,13 +472,61 @@ import { OpenAIChatCompletionsModel, OpenAIResponsesModel } from "agent-kit/open
 import { AnthropicMessagesModel } from "agent-kit/anthropic";
 ```
 
+### 用假模型写测试
+
+`agent-kit/testing` 提供一个按脚本回放的 `LanguageModel`，让宿主在不用网络、不用 API key 的情况下测试自己的工具、审批、重试和错误路径。它就是一个普通的 `LanguageModel`，能传给任何接受模型的构造器。
+
+```ts
+import { test, expect } from "bun:test";
+import { z } from "zod";
+import { Agent, defineTool } from "agent-kit";
+import { createFakeModel } from "agent-kit/testing";
+
+const checkStock = defineTool({
+  name: "check_stock",
+  description: "查询库存。",
+  input: z.object({ sku: z.string() }),
+  annotations: { readOnly: true },
+  execute: () => ({ inStock: false }),
+});
+
+test("缺货时如实报告", async () => {
+  const model = createFakeModel({
+    turns: [
+      { toolCalls: [{ name: "check_stock", input: { sku: "A-1" } }] },
+      { text: "这本书缺货。" },
+    ],
+  });
+  const events = [];
+  for await (const event of new Agent({ model, tools: [checkStock] }).stream({
+    messages: [{ role: "user", content: "帮我买 A-1" }],
+  })) {
+    events.push(event);
+  }
+
+  expect(events.at(-1)).toMatchObject({ type: "agent.completed" });
+  expect(model.requests).toHaveLength(2);
+});
+```
+
+脚本以一「轮」为单位，也就是每次模型请求对应一项：
+
+- `text` / `reasoning` / `refusal` 会按 `chunkSize`（默认 4）切成增量流；`toolCalls` 会生成带稳定 id 的工具调用；`usage` 与 `responseId` 原样上报。
+- `finishReason` 缺省按是否有工具调用推导为 `tool_calls` 或 `stop`。
+- `error` 直接抛出，用来驱动模型重试路径；`hang` 让该轮一直挂起，直到调用方的 `signal` 被 abort，用来测取消与超时。
+- 脚本用尽会抛错，**不会重复最后一轮**——静默重复会让测试意外通过。
+- `onRequest(request, turnIndex)` 可以按请求动态生成一轮，适合根据消息数量或内容分支；返回值优先于 `turns`，返回 `void` 时回退到脚本。
+- `model.requests` 记录每次收到的请求（含完整 `messages`），可以断言 Agent 究竟把什么发给了模型。
+
+`createFakeModel` 不校验工具参数 schema——参数校验是被测 Agent 的职责，假模型只负责把脚本里的参数原样交给它。
+
 ### 安装与构建
 
 ```sh
 bun add agent-kit
 ```
 
-`zod` 是唯一的运行时依赖。`openai`、`@anthropic-ai/sdk` 与 `@opentelemetry/api` 声明为可选 peer dependency，只有 import `agent-kit/openai`、`agent-kit/anthropic` 或 `agent-kit/otel` 时才需要安装。SQLite 存储类接受任何满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时——在 Node 里可以传入 `node:sqlite` 或其他兼容实现的包装。
+`zod` 是唯一的运行时依赖。`openai`、`@anthropic-ai/sdk` 与 `@opentelemetry/api` 声明为可选 peer dependency，只有 import `agent-kit/openai`、`agent-kit/anthropic` 或 `agent-kit/otel` 时才需要安装。`agent-kit/testing` 无额外依赖。SQLite 存储类接受任何满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时——在 Node 里可以传入 `node:sqlite` 或其他兼容实现的包装。
 
 发布产物由 `tsc` 生成，保留模块结构：
 
@@ -495,7 +543,7 @@ bun run verify-package
 ```
 
 - tarball 只含 `dist/`、README、LICENSE、GLOSSARY，不含源码、测试或示例
-- 四个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic`、`agent-kit/otel` 都能被 Node 直接 import
+- 五个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic`、`agent-kit/otel`、`agent-kit/testing` 都能被 Node 直接 import，且 `createFakeModel` 能驱动一次完整 run
 - 消费者项目不会自动装上 `openai` / `@anthropic-ai/sdk` / `@opentelemetry/api`
 - 消费者在 `moduleResolution: "nodenext"` 下只用核心 API 即可通过类型检查
 - 没装 `@opentelemetry/api` 时 `agent-kit/otel` 明确报 `ERR_MODULE_NOT_FOUND`；装上后能导出真实 span 并通过类型检查
