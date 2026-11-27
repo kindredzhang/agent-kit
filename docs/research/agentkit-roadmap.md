@@ -173,6 +173,18 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `defineTool({ timeoutMs })` 提供单次尝试粒度：超时抛 `TimeoutError`，走普通工具失败路径（`tool.execution.failed`、错误回灌模型、run 继续），并与 `retry` 正交叠加。
 - 实现细节：超时定时器**不能** `unref()`。Bun 会因此认为没有挂起句柄而直接退出，定时器永不触发；`unref` 只适用于「不该阻止进程退出」的辅助定时器，而超时定时器恰恰是应该保持进程活着的那个。
 
+### 阶段 12：OpenTelemetry 导出（已完成）
+
+追踪记录早就能序列化，但把它接进主流可观测栈还得用户自己写映射。这一阶段把 `AgentTrace` 转成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树，放在新子路径 `agent-kit/otel`。
+
+- **不发明 span 类型**。语义约定里只有 `invoke_agent`、`chat`、`execute_tool` 三类适用于本库；`plan` 明确要求「无法区分规划与普通推理时不应上报」，而轮次（`step`）在规范中没有对应物。所以 turn 不是 span，chat 与 execute_tool 直接挂在 run span 下。
+- **子路径依赖而非结构化接口**。原本打算沿用 `SQLiteDatabase` 的做法定义一个 `Tracer` 形状接口来绕开依赖，但父子关系只能经由 OTel 的 Context API（`trace.setSpan(context.active(), span)` + 把 context 传给 `startSpan`）建立，结构化接口在这里建不出真正的 span 树。于是与 `agent-kit/openai` 依赖 `openai` 同理：`@opentelemetry/api` 放进 optional peer，核心入口仍然零依赖。
+- **内容捕获必须显式开启**。`gen_ai.output.messages`、`gen_ai.tool.call.arguments`、`gen_ai.tool.call.result` 属于规范里的 opt-in 属性，可能含用户数据；它们只在 `AgentTraceCollector` 打开 `recordInputs` / `recordOutputs` 时才出现。OTel JS 的 `setAttribute` 只接受原始值与同类数组，所以这些 JSON 结构序列化成字符串。
+- **错误只留类型名**。既有的 trace 测试明确要求错误消息不进入追踪记录（可能含敏感信息），因此 `AgentTraceError` 只有 `name`；span 上的 `error.type` 与 `status.message` 都用它。这与规范要的「低基数错误标识」正好一致。
+- **`AgentTrace` 补了两个字段**：`error`（run 与工具各一份）和 `sessionId`（映射成 `gen_ai.conversation.id`）。`agent.started` / `agent.resumed` 事件相应带上可选 `sessionId`。
+- 采集器按 `record()` 调用时刻打时间戳，这一点在导出时才暴露出来：先把事件收集成数组再回放，所有 span 时长会塌成零。README 已写明要边流边记。
+- `verify-package` 增加了双向检查：没装 `@opentelemetry/api` 时 `agent-kit/otel` 必须报 `ERR_MODULE_NOT_FOUND`，装上后必须能导出真实 span 并通过 `nodenext` 类型检查。负向检查做过实证，不是空转。
+
 ### 明确推迟
 
 | 事项 | 为什么现在不做 |

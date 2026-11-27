@@ -76,7 +76,7 @@ database.close();
 
 ### 对着真实模型运行
 
-`examples/` 下有针对真实模型端点的验收示例，覆盖工具循环、结构化输出、审批恢复和崩溃恢复：
+`examples/` 下有针对真实模型端点的验收示例，覆盖工具循环、结构化输出、审批恢复、崩溃恢复、超时预算与 OpenTelemetry 导出：
 
 ```bash
 cp .env.example .env        # 填入 OPENAI_BASE_URL、OPENAI_API_KEY、AGENTKIT_MODEL
@@ -299,6 +299,41 @@ if (trace) {
 
 暂停和恢复各自产生带独立 `id` 的追踪记录，并共享 `runId`。评估时按发生顺序传入同一 run 的各段记录。评估严格比较 `tool.execution.started` 对应的轮次与工具名，返回实际序列以及第一个差异的零基索引。这样并行工具的完成顺序不会影响结果。需要在 CI 中断言固定轨迹时，可以用预设响应的 `LanguageModel`。工具是否成功以及 run 是否完成，可以分别通过追踪中的 `status` 断言。
 
+`AgentTraceCollector` 按 `record()` 被调用的时刻打时间戳，所以要边接收事件边记录。先把事件收集成数组再回放，会让所有 span 的时长塌缩为零。
+
+### 导出为 OpenTelemetry Span
+
+`agent-kit/otel` 把一份追踪记录转换成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树。核心入口不依赖 OpenTelemetry；`@opentelemetry/api` 是可选 peer，只有导入这个子路径时才需要安装。
+
+```ts
+import { AgentTraceCollector } from "agent-kit";
+import { exportAgentTrace } from "agent-kit/otel";
+
+const collector = new AgentTraceCollector();
+for await (const event of agent.stream({
+  messages: [{ role: "user", content: "查询东京的天气。" }],
+})) {
+  collector.record(event);
+}
+
+const trace = collector.finish();
+if (trace) {
+  exportAgentTrace(trace, { model: "claude-sonnet-5-5", agentName: "WeatherAssistant" });
+}
+```
+
+不传 `tracer` 时使用全局 tracer（`trace.getTracer("agent-kit")`），因此配置好 `NodeTracerProvider` 后无需额外接线。导出后的结构：
+
+| Span | Kind | 名称 | 关键属性 |
+| --- | --- | --- | --- |
+| Agent run | `INTERNAL` | `invoke_agent {gen_ai.agent.name}` | `gen_ai.operation.name`、`gen_ai.provider.name`、`gen_ai.request.model`、`gen_ai.conversation.id`、`gen_ai.usage.*`、`gen_ai.response.finish_reasons` |
+| 每次模型调用 | `CLIENT` | `chat {gen_ai.request.model}` | 同上，另加 `gen_ai.output.messages`（需 `recordOutputs`） |
+| 每次工具执行 | `INTERNAL` | `execute_tool {gen_ai.tool.name}` | `gen_ai.tool.name`、`gen_ai.tool.call.id`、`gen_ai.tool.type`、`gen_ai.tool.call.arguments` / `.result`（需 `recordInputs` / `recordOutputs`） |
+
+chat 与 execute_tool span 都挂在 run span 之下，并沿用追踪记录里的起止时间。run 失败时 span 带有 `error.type` 与 `ERROR` 状态；工具失败只标记该工具 span，不影响 run span。`gen_ai.conversation.id` 取自 `sessionId`。
+
+`gen_ai.output.messages`、`gen_ai.tool.call.arguments` 和 `gen_ai.tool.call.result` 属于语义约定里的 opt-in 内容捕获，可能包含用户数据；它们只在 `AgentTraceCollector` 开启 `recordInputs` / `recordOutputs` 时出现。错误消息本身不进入追踪记录，也不会进入 span，只保留低基数的错误类型名。
+
 ### 批量回归评估
 
 `evaluateAgentCases()` 在一条公开接缝上批量运行用例，并同时断言 **run 是否按预期结束、工具轨迹、最终文本与结构化结果**，而不只是工具调用顺序：
@@ -443,7 +478,7 @@ import { AnthropicMessagesModel } from "agent-kit/anthropic";
 bun add agent-kit
 ```
 
-`zod` 是唯一的运行时依赖。`openai` 与 `@anthropic-ai/sdk` 声明为可选 peer dependency，只有 import `agent-kit/openai` 或 `agent-kit/anthropic` 时才需要安装。SQLite 存储类接受任何满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时——在 Node 里可以传入 `node:sqlite` 或其他兼容实现的包装。
+`zod` 是唯一的运行时依赖。`openai`、`@anthropic-ai/sdk` 与 `@opentelemetry/api` 声明为可选 peer dependency，只有 import `agent-kit/openai`、`agent-kit/anthropic` 或 `agent-kit/otel` 时才需要安装。SQLite 存储类接受任何满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时——在 Node 里可以传入 `node:sqlite` 或其他兼容实现的包装。
 
 发布产物由 `tsc` 生成，保留模块结构：
 
@@ -460,8 +495,9 @@ bun run verify-package
 ```
 
 - tarball 只含 `dist/`、README、LICENSE、GLOSSARY，不含源码、测试或示例
-- 三个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic` 都能被 Node 直接 import
-- 消费者项目不会自动装上 `openai` / `@anthropic-ai/sdk`
+- 四个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic`、`agent-kit/otel` 都能被 Node 直接 import
+- 消费者项目不会自动装上 `openai` / `@anthropic-ai/sdk` / `@opentelemetry/api`
 - 消费者在 `moduleResolution: "nodenext"` 下只用核心 API 即可通过类型检查
+- 没装 `@opentelemetry/api` 时 `agent-kit/otel` 明确报 `ERR_MODULE_NOT_FOUND`；装上后能导出真实 span 并通过类型检查
 
 CI 在 GitHub Actions 上跑同样的四件事：`typecheck`、`bun test`、`verify-package`。`examples` job 只在推送 `main` 且仓库变量 `AGENTKIT_LIVE_EXAMPLES` 为 `true` 时运行，需要 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`AGENTKIT_MODEL` 三个 secrets。job 级 `if` 不能读取 `secrets`，所以开关放在仓库变量上；变量打开但 secret 缺失时该 job 会直接报错，而不是静默跳过。

@@ -8,14 +8,20 @@ interface TraceTiming {
   endedAt: number;
 }
 
+export interface AgentTraceError {
+  name: string;
+}
+
 export interface AgentTrace extends TraceTiming {
   id: string;
   runId: string;
   operation: "invoke_agent";
   provider?: ModelProvider;
+  sessionId?: string;
   resumed: boolean;
   status: "completed" | "paused" | "stopped" | "failed" | "interrupted";
   stopReason?: AgentStopReason;
+  error?: AgentTraceError;
   usage?: TokenUsage;
   budget?: AgentBudgetSnapshot;
   turns: AgentTurnTrace[];
@@ -45,6 +51,7 @@ export interface AgentToolTrace extends TraceTiming {
   name: string;
   status: "completed" | "failed" | "interrupted";
   attempts?: number;
+  error?: AgentTraceError;
   input?: JsonObject;
   output?: JsonValue;
 }
@@ -63,6 +70,10 @@ export interface AgentTraceOptions {
   recordOutputs?: boolean;
   requestModel?: string;
   now?: () => number;
+}
+
+function describeError(error: Error): AgentTraceError {
+  return { name: error.name };
 }
 
 export class AgentTraceCollector {
@@ -91,6 +102,7 @@ export class AgentTraceCollector {
       if (this.trace) throw new Error("An AgentTraceCollector accepts one Agent event stream.");
       this.trace = this.startTrace(event.runId, this.now());
       this.trace.provider = event.provider;
+      if (event.sessionId !== undefined) this.trace.sessionId = event.sessionId;
       this.trace.resumed = event.type === "agent.resumed";
       return;
     }
@@ -111,6 +123,7 @@ export class AgentTraceCollector {
       case "agent.failed":
         trace.status = event.type === "agent.completed" ? "completed" : event.type === "agent.stopped" ? "stopped" : "failed";
         trace.stopReason = event.stopReason;
+        if (event.type === "agent.failed") trace.error = describeError(event.error);
         if (event.usage) trace.usage = combineUsage(undefined, event.usage);
         this.close(now);
         return;
@@ -196,6 +209,7 @@ export class AgentTraceCollector {
         tool.endedAt = now;
         tool.status = event.type === "tool.execution.completed" ? "completed" : "failed";
         if (event.attempts !== undefined) tool.attempts = event.attempts;
+        if (event.type === "tool.execution.failed") tool.error = describeError(event.error);
         if (event.type === "tool.execution.completed" && this.recordOutputs) {
           tool.output = structuredClone(event.result);
         }

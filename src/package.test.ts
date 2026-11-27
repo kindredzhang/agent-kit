@@ -28,10 +28,11 @@ test("declares a publishable package with typed subpath exports", async () => {
     types: "./dist/index.d.ts",
     import: "./dist/index.js",
   });
-  expect(Object.keys(manifest.exports)).toEqual([".", "./openai", "./anthropic"]);
+  expect(Object.keys(manifest.exports)).toEqual([".", "./openai", "./anthropic", "./otel"]);
   expect(Object.keys(manifest.dependencies)).toEqual(["zod"]);
   expect(manifest.peerDependenciesMeta.openai.optional).toBe(true);
   expect(manifest.peerDependenciesMeta["@anthropic-ai/sdk"].optional).toBe(true);
+  expect(manifest.peerDependenciesMeta["@opentelemetry/api"].optional).toBe(true);
   expect(manifest.files).toContain("dist");
 });
 
@@ -52,6 +53,7 @@ test("keeps vendor SDKs out of the core type surface", async () => {
     const source = await readFile(join(dist, declaration), "utf8");
     expect(source).not.toContain('from "openai"');
     expect(source).not.toContain('from "@anthropic-ai/sdk"');
+    expect(source).not.toContain('from "@opentelemetry/api"');
     expect(source).not.toContain('from "bun:sqlite"');
   }
 });
@@ -59,7 +61,7 @@ test("keeps vendor SDKs out of the core type surface", async () => {
 test("emits declarations that resolve without bundler-only resolution", async () => {
   const unresolved: string[] = [];
 
-  for (const declaration of ["index.d.ts", "openai.d.ts", "anthropic.d.ts"]) {
+  for (const declaration of ["index.d.ts", "openai.d.ts", "anthropic.d.ts", "otel.d.ts"]) {
     const source = await readFile(join(dist, declaration), "utf8");
     for (const match of source.matchAll(/from "(\.[^"]*)"/g)) {
       if (!match[1]!.endsWith(".js")) unresolved.push(`${declaration}: ${match[1]}`);

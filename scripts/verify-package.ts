@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const entryPoints = ["index", "openai", "anthropic"];
+const entryPoints = ["index", "openai", "anthropic", "otel"];
+const optionalPeers = ["openai", "@anthropic-ai/sdk", "@opentelemetry/api"];
 const requiredFiles = entryPoints.flatMap((name) => [`${name}.js`, `${name}.d.ts`]);
 
 interface CommandResult {
@@ -67,9 +68,7 @@ async function installIntoConsumer(consumer: string, tarball: string): Promise<v
 }
 
 async function assertVendorSdksAreNotInstalled(consumer: string): Promise<void> {
-  const unexpected = ["openai", "@anthropic-ai/sdk"].filter((name) =>
-    existsSync(join(consumer, "node_modules", name)),
-  );
+  const unexpected = optionalPeers.filter((name) => existsSync(join(consumer, "node_modules", name)));
   if (unexpected.length > 0) {
     throw new Error(
       `Optional peer dependencies were installed automatically: ${unexpected.join(", ")}. The consumer check is meaningless unless they are absent.`,
@@ -77,9 +76,116 @@ async function assertVendorSdksAreNotInstalled(consumer: string): Promise<void> 
   }
 }
 
+async function assertOtelEntryPointFailsWithoutItsPeer(consumer: string): Promise<void> {
+  const script = `
+try {
+  await import("agent-kit/otel");
+} catch (error) {
+  if (error?.code === "ERR_MODULE_NOT_FOUND" && String(error.message).includes("@opentelemetry/api")) {
+    console.log("agent-kit/otel correctly requires @opentelemetry/api");
+    process.exit(0);
+  }
+  throw error;
+}
+throw new Error("agent-kit/otel loaded without @opentelemetry/api installed");
+`;
+  await writeFile(join(consumer, "otel-absent.mjs"), script.trimStart());
+  await runOrFail(consumer, ["node", "otel-absent.mjs"], "Loading agent-kit/otel without its peer dependency");
+}
+
+async function assertOtelTypesResolveWithItsPeer(consumer: string): Promise<void> {
+  await runOrFail(
+    consumer,
+    ["npm", "install", "@opentelemetry/api@^1.10.0", "--no-audit", "--no-fund", "--loglevel", "error"],
+    "npm install of the OpenTelemetry peer dependency",
+  );
+  const script = `
+import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import { exportAgentTrace } from "agent-kit/otel";
+import { Agent, AgentTraceCollector } from "agent-kit";
+
+const spans = [];
+const tracer = {
+  startSpan(name, options) {
+    const span = {
+      name,
+      kind: options?.kind,
+      attributes: { ...options?.attributes },
+      setAttribute(key, value) { this.attributes[key] = value; return this; },
+      setStatus(status) { this.status = status; return this; },
+      end() { spans.push(this); },
+    };
+    return span;
+  },
+};
+if (typeof context.active !== "function" || SpanKind.INTERNAL !== 0 || SpanStatusCode.ERROR !== 2) {
+  throw new Error("Unexpected @opentelemetry/api surface");
+}
+if (typeof trace.getTracer("x").startSpan !== "function") throw new Error("Unexpected tracer surface");
+
+const model = {
+  provider: "openai-chat-completions",
+  async *stream() {
+    yield { type: "text.delta", delta: "hi" };
+    yield { type: "usage", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } };
+    yield { type: "finish", finishReason: "stop" };
+  },
+};
+const collector = new AgentTraceCollector();
+for await (const event of new Agent({ model }).stream({ messages: [{ role: "user", content: "hi" }] })) {
+  collector.record(event);
+}
+exportAgentTrace(collector.finish(), { tracer, model: "test-model" });
+
+const agentSpan = spans.find((span) => span.name === "invoke_agent");
+if (!agentSpan) throw new Error("No invoke_agent span was exported");
+if (agentSpan.attributes["gen_ai.operation.name"] !== "invoke_agent") throw new Error("Missing gen_ai.operation.name");
+if (agentSpan.attributes["gen_ai.usage.input_tokens"] !== 4) throw new Error("Missing token usage");
+if (!spans.some((span) => span.name === "chat test-model")) throw new Error("No chat span was exported");
+if (typeof exportAgentTrace !== "function") throw new Error("agent-kit/otel did not export exportAgentTrace");
+console.log(\`agent-kit/otel exported \${spans.length} spans against the real @opentelemetry/api\`);
+`;
+  await writeFile(join(consumer, "otel-present.mjs"), script.trimStart());
+  await runOrFail(consumer, ["node", "otel-present.mjs"], "Exporting a trace against the real OpenTelemetry API");
+
+  await writeFile(
+    join(consumer, "otel-consumer.ts"),
+    `import type { Tracer } from "@opentelemetry/api";
+import { exportAgentTrace } from "agent-kit/otel";
+import type { AgentTrace } from "agent-kit";
+
+export function exportTrace(trace: AgentTrace, tracer: Tracer): void {
+  exportAgentTrace(trace, { tracer, model: "test-model", agentName: "Researcher" });
+}
+`,
+  );
+  await writeFile(
+    join(consumer, "tsconfig.otel.json"),
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          module: "nodenext",
+          moduleResolution: "nodenext",
+          target: "es2023",
+          lib: ["es2023", "dom"],
+          strict: true,
+          noEmit: true,
+          skipLibCheck: false,
+          types: [],
+        },
+        include: ["otel-consumer.ts"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const tsc = join(root, "node_modules", ".bin", "tsc");
+  await runOrFail(consumer, [tsc, "-p", "tsconfig.otel.json"], "Type-checking agent-kit/otel against the real OpenTelemetry API");
+}
+
 async function assertNodeLoadsEntryPoints(consumer: string): Promise<void> {
   const script = `
-const entryPoints = ${JSON.stringify(entryPoints)};
+const entryPoints = ${JSON.stringify(entryPoints.filter((name) => name !== "otel"))};
 for (const name of entryPoints) {
   const specifier = name === "index" ? "agent-kit" : \`agent-kit/\${name}\`;
   const loaded = await import(specifier);
@@ -183,6 +289,8 @@ async function main(): Promise<void> {
   await assertVendorSdksAreNotInstalled(consumer);
   await assertNodeLoadsEntryPoints(consumer);
   await assertCoreTypesResolveWithoutVendorSdks(consumer);
+  await assertOtelEntryPointFailsWithoutItsPeer(consumer);
+  await assertOtelTypesResolveWithItsPeer(consumer);
 
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   console.log(

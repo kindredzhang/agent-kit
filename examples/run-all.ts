@@ -7,6 +7,7 @@ const examples = [
   { file: "approval.ts", what: "approval pause, resume by run id, rejection" },
   { file: "durable-recovery.ts", what: "crash recovery, replay window, idempotency key" },
   { file: "timeouts.ts", what: "tool timeout and wall-clock budget" },
+  { file: "otel-export.ts", what: "OpenTelemetry spans following the GenAI semantic conventions" },
 ];
 
 const selected = process.argv.slice(2);

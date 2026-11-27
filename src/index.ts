@@ -30,6 +30,7 @@ export type {
   AgentModelTrace,
   AgentToolTrace,
   AgentTrace,
+  AgentTraceError,
   AgentTraceOptions,
   AgentTurnTrace,
 } from "./core/trace.js";

@@ -28,6 +28,14 @@ _Avoid_: Timeout, deadline
 The maximum duration one attempt of a Tool execution may take before it is reported as a failed Tool call.
 _Avoid_: Wall-clock budget, cancellation
 
+**Trace record**:
+The serializable timing record of one Agent run segment, covering its turns, Model calls, Tool executions, approvals and outcome.
+_Avoid_: Span, log entry
+
+**Span**:
+An OpenTelemetry unit of work that a Trace record is exported into, carrying a name, kind, timing, attributes and status.
+_Avoid_: Trace record, event
+
 **Context compaction**:
 Reducing the active conversation context by removing older complete interactions while preserving instructions and the current request.
 _Avoid_: Summarization

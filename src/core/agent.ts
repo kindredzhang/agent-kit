@@ -79,8 +79,8 @@ export type AgentStopReason =
   | "error";
 
 export type AgentEvent =
-  | { type: "agent.started"; runId: string; provider: ModelProvider }
-  | { type: "agent.resumed"; runId: string; provider: ModelProvider }
+  | { type: "agent.started"; runId: string; provider: ModelProvider; sessionId?: string }
+  | { type: "agent.resumed"; runId: string; provider: ModelProvider; sessionId?: string }
   | { type: "agent.budget.updated"; runId: string; budget: AgentBudgetSnapshot }
   | { type: "agent.checkpointed"; runId: string; turn: number; resumeAt: "model_turn" | "tool_batch" }
   | { type: "agent.paused"; runId: string; turn: number; pendingToolCall: AgentToolCall; runState: AgentRunState }
@@ -445,8 +445,8 @@ export class Agent {
     const approvalDecisions: AgentRunState["approvalDecisions"][number][] = [];
 
     yield restoredState
-      ? { type: "agent.resumed", runId, provider: this.options.model.provider }
-      : { type: "agent.started", runId, provider: this.options.model.provider };
+      ? { type: "agent.resumed", runId, provider: this.options.model.provider, ...(sessionId !== undefined ? { sessionId } : {}) }
+      : { type: "agent.started", runId, provider: this.options.model.provider, ...(sessionId !== undefined ? { sessionId } : {}) };
 
     let totalUsage: TokenUsage | undefined = restoredState?.usage;
     let currentBudget: AgentBudget | undefined;

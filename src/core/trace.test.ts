@@ -239,3 +239,35 @@ test("finalizes an interrupted event consumer without inventing a run outcome", 
   expect(trace?.stopReason).toBeUndefined();
   expect(trace?.turns[0]?.model?.endedAt).toBe(trace?.endedAt);
 });
+
+test("records the error type on a failed run and its failed tool", async () => {
+  const collector = new AgentTraceCollector();
+  const agent = new Agent({
+    model: {
+      provider: "openai-chat-completions",
+      async *stream({ messages }) {
+        if (!messages.some(({ role }) => role === "tool")) {
+          yield { type: "tool.call.completed", toolCall: { id: "call_1", name: "lookup", input: { key: "a" } } };
+          yield { type: "finish", finishReason: "tool_calls" };
+          return;
+        }
+        throw new RangeError("secret-detail");
+      },
+    },
+    tools: [{ ...lookup, execute: () => { throw new TypeError("also-secret"); } }],
+  });
+  for await (const event of agent.stream(input)) collector.record(event);
+  const trace = collector.finish()!;
+
+  expect(trace.error).toEqual({ name: "RangeError" });
+  expect(trace.turns[0]?.tools[0]?.error).toEqual({ name: "TypeError" });
+  expect(JSON.stringify(trace)).not.toContain("secret");
+});
+
+test("records the session id on the run trace", async () => {
+  const { InMemorySessionStore } = await import("../index.js");
+  const agent = new Agent({ model, tools: [lookup], sessionStore: new InMemorySessionStore() });
+  const trace = await collect(agent.stream({ ...input, sessionId: "session-42" }));
+
+  expect(trace.sessionId).toBe("session-42");
+});
