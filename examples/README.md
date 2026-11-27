@@ -16,7 +16,7 @@ bun run examples approval   # 只运行匹配的示例
 | --- | --- |
 | `OPENAI_BASE_URL` | 任意兼容 OpenAI Chat Completions 的端点 |
 | `OPENAI_API_KEY` | 该端点的 key |
-| `AGENTKIT_MODEL` | 该端点提供的模型 id |
+| `REIN_MODEL` | 该端点提供的模型 id |
 
 示例统一使用 `OpenAIChatCompletionsModel`。换成 OpenAI Responses 或 Anthropic Messages 适配器时只需替换模型构造，Agent 侧代码不变。
 
@@ -29,7 +29,7 @@ bun run examples approval   # 只运行匹配的示例
 | `approval.ts` | `approvalMode: "pause"`、`AgentApprovalQueue` 跨进程记录与批准、`resume(agent, runId)`、拒绝不执行 |
 | `durable-recovery.ts` | 检查点写入顺序、崩溃后按 `runId` 恢复、同批次重放的 `toolCallId` 幂等键、终态清理 |
 | `timeouts.ts` | `timeoutMs` 单次尝试超时、`maxDurationMs` 墙钟预算、超时后 run 仍能继续 |
-| `otel-export.ts` | `agent-kit/otel` 导出真实 span 树、GenAI 语义约定属性、父子关系与时长 |
+| `otel-export.ts` | `rein-kit/otel` 导出真实 span 树、GenAI 语义约定属性、父子关系与时长 |
 
 `durable-recovery.ts` 值得单独说明：它**故意**在工具执行后重新从同一检查点恢复一次，用来证明重放会带着相同的 `toolCallId` 回来，因此幂等键能拦住重复扣款。这正是持久恢复的 at-least-once 语义，不是 bug。
 

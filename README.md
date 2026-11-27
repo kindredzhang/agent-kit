@@ -1,22 +1,22 @@
-# AgentKit
+# Rein
 
 **在 TypeScript 应用里运行能调用工具、能等待人工审批的 AI Agent。**
 
-AgentKit 是一个厂商无关的 Agent 运行时。你提供模型和业务工具，它负责校验参数、按策略执行工具，再把结果交给模型继续处理。应用从同一条事件流读取输出、工具调用和审批状态，不用为每个模型端点重写这套循环。
+Rein 是一个厂商无关的 Agent 运行时。你提供模型和业务工具，它负责校验参数、按策略执行工具，再把结果交给模型继续处理。应用从同一条事件流读取输出、工具调用和审批状态，不用为每个模型端点重写这套循环。
 
-比如，库存助手可以直接查询库存；如果后来要让它修改订单，可以先暂停这次运行，等人工批准后再继续。AgentKit 可以嵌入现有应用，不要求特定的 Web 框架或托管服务。
+比如，库存助手可以直接查询库存；如果后来要让它修改订单，可以先暂停这次运行，等人工批准后再继续。Rein 可以嵌入现有应用，不要求特定的 Web 框架或托管服务。
 
 [快速开始](#快速开始) · [接入真实模型](#接入真实模型) · [使用指南](docs/guide.md) · [示例](examples/README.md)
 
 ## 快速开始
 
-先用一个按脚本应答的假模型跑通「模型发出工具调用 → AgentKit 执行 → 模型回答」。安装依赖后，这个示例不需要 API Key，也不会调用模型服务。
+先用一个按脚本应答的假模型跑通「模型发出工具调用 → Rein 执行 → 模型回答」。安装依赖后，这个示例不需要 API Key，也不会调用模型服务。
 
 安装 [Bun](https://bun.sh/) 后，从源码构建：
 
 ```sh
-git clone https://github.com/kindredzhang/agent-kit.git
-cd agent-kit
+git clone https://github.com/kindredzhang/rein-kit.git
+cd rein-kit
 bun install --frozen-lockfile
 bun run build
 ```
@@ -25,8 +25,8 @@ bun run build
 
 ```ts
 import { z } from "zod";
-import { Agent, defineTool } from "agent-kit";
-import { createFakeModel } from "agent-kit/testing";
+import { Agent, defineTool } from "rein-kit";
+import { createFakeModel } from "rein-kit/testing";
 
 const checkStock = defineTool({
   name: "check_stock",
@@ -73,25 +73,25 @@ A-1 还有 3 件库存。
 
 ## 接入真实模型
 
-以 OpenAI Chat Completions 为例，设置 `OPENAI_API_KEY` 和 `AGENTKIT_MODEL`，后者填支持工具调用的模型 ID。使用兼容网关时再设置 `OPENAI_BASE_URL`。可以把这些变量放在本地 `.env` 中，不要提交密钥。
+以 OpenAI Chat Completions 为例，设置 `OPENAI_API_KEY` 和 `REIN_MODEL`，后者填支持工具调用的模型 ID。使用兼容网关时再设置 `OPENAI_BASE_URL`。可以把这些变量放在本地 `.env` 中，不要提交密钥。
 
 将快速开始里的 `createFakeModel` 导入换成下面两条导入，再替换 `const model` 的定义。工具和 `agent.stream()` 不变。
 
 ```ts
 import OpenAI from "openai";
-import { OpenAIChatCompletionsModel } from "agent-kit/openai";
+import { OpenAIChatCompletionsModel } from "rein-kit/openai";
 
-const modelId = process.env.AGENTKIT_MODEL;
-if (!modelId) throw new Error("请设置 AGENTKIT_MODEL");
+const modelId = process.env.REIN_MODEL;
+if (!modelId) throw new Error("请设置 REIN_MODEL");
 
 const model = new OpenAIChatCompletionsModel({ client: new OpenAI(), model: modelId });
 ```
 
 | 模型 API | 适配器 | 导入路径 | SDK |
 | --- | --- | --- | --- |
-| OpenAI Chat Completions | `OpenAIChatCompletionsModel` | `agent-kit/openai` | `openai` |
-| OpenAI Responses | `OpenAIResponsesModel` | `agent-kit/openai` | `openai` |
-| Anthropic Messages | `AnthropicMessagesModel` | `agent-kit/anthropic` | `@anthropic-ai/sdk` |
+| OpenAI Chat Completions | `OpenAIChatCompletionsModel` | `rein-kit/openai` | `openai` |
+| OpenAI Responses | `OpenAIResponsesModel` | `rein-kit/openai` | `openai` |
+| Anthropic Messages | `AnthropicMessagesModel` | `rein-kit/anthropic` | `@anthropic-ai/sdk` |
 
 核心入口不引入厂商 SDK。以上 SDK 已包含在仓库的开发依赖中；[安装到自己的项目](docs/guide.md#安装与打包)时，只需另装所选的 SDK。已配置兼容网关的话，也可直接运行 `bun run examples tool-loop`，查看[完整示例](examples/README.md)。
 
@@ -107,7 +107,7 @@ const model = new OpenAIChatCompletionsModel({ client: new OpenAI(), model: mode
 | 排查模型调用与工具执行，或在 CI 中做回归 | [追踪与评估](docs/guide.md#追踪与评估)：支持 OpenTelemetry 导出和离线假模型。 |
 | 接入 MCP 工具，或把子任务交给另一个 Agent | [MCP 与子代理](docs/guide.md#扩展) |
 
-**运行边界：** AgentKit 不是执行沙箱。鉴权、工具实际能访问什么、并发恢复去重都由应用负责。检查点恢复可能重放工具调用；有外部副作用的工具应使用幂等键。Token 预算也不是账单上限。
+**运行边界：** Rein 不是执行沙箱。鉴权、工具实际能访问什么、并发恢复去重都由应用负责。检查点恢复可能重放工具调用；有外部副作用的工具应使用幂等键。Token 预算也不是账单上限。
 
 ## 开发
 
@@ -119,4 +119,4 @@ bun test
 bun run verify-package
 ```
 
-[术语表](GLOSSARY.md) · [开发路线图](docs/research/agentkit-roadmap.md) · [MIT 许可证](LICENSE)
+[术语表](GLOSSARY.md) · [开发路线图](docs/research/rein-roadmap.md) · [MIT 许可证](LICENSE)

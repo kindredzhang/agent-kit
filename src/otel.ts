@@ -9,7 +9,7 @@ export interface AgentTraceExportOptions {
   agentName?: string;
 }
 
-const defaultTracerName = "agent-kit";
+const defaultTracerName = "rein-kit";
 
 const providerNames: Record<ModelProvider, string> = {
   "openai-chat-completions": "openai",

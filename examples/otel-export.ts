@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  exportAgentTrace(trace, { tracer: provider.getTracer("agent-kit-example"), model: modelId, agentName: "WeatherAssistant" });
+  exportAgentTrace(trace, { tracer: provider.getTracer("rein-kit-example"), model: modelId, agentName: "WeatherAssistant" });
   await provider.forceFlush();
 
   console.log(`\nspan tree (status=${stopReason}):`);

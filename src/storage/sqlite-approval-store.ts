@@ -18,7 +18,7 @@ import type { SQLiteDatabase } from "./sqlite.js";
 export class SQLiteApprovalStore implements AgentApprovalStore {
   constructor(private readonly database: SQLiteDatabase) {
     this.database.run(`
-      CREATE TABLE IF NOT EXISTS agentkit_agent_approvals (
+      CREATE TABLE IF NOT EXISTS rein_agent_approvals (
         run_id TEXT NOT NULL,
         approval_id TEXT NOT NULL,
         request_json TEXT NOT NULL,
@@ -30,26 +30,26 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
 
   private ensureCreatedAtIndex(): void {
     const columns = this.database.query<{ name: string }>(
-      "PRAGMA table_info(agentkit_agent_approvals)",
+      "PRAGMA table_info(rein_agent_approvals)",
     ).all();
     if (!columns.some(({ name }) => name === "created_at")) {
-      this.database.run("ALTER TABLE agentkit_agent_approvals ADD COLUMN created_at INTEGER");
+      this.database.run("ALTER TABLE rein_agent_approvals ADD COLUMN created_at INTEGER");
       this.backfillCreatedAt();
     }
     this.database.run(`
-      CREATE INDEX IF NOT EXISTS agentkit_agent_approvals_order
-      ON agentkit_agent_approvals (created_at, run_id, approval_id)
+      CREATE INDEX IF NOT EXISTS rein_agent_approvals_order
+      ON rein_agent_approvals (created_at, run_id, approval_id)
     `);
   }
 
   private backfillCreatedAt(): void {
     const rows = this.database.query<{ run_id: string; approval_id: string; request_json: string }>(`
       SELECT run_id, approval_id, request_json
-      FROM agentkit_agent_approvals
+      FROM rein_agent_approvals
       WHERE created_at IS NULL
     `).all();
     const update = this.database.query<never>(`
-      UPDATE agentkit_agent_approvals
+      UPDATE rein_agent_approvals
       SET created_at = ?
       WHERE run_id = ? AND approval_id = ?
     `);
@@ -68,7 +68,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
       throw new TypeError("An approval request requires a numeric createdAt.");
     }
     this.database.query<never>(`
-      INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json, created_at)
+      INSERT INTO rein_agent_approvals (run_id, approval_id, request_json, created_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT (run_id, approval_id) DO UPDATE SET
         request_json = excluded.request_json,
@@ -81,7 +81,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
     assertRunId(runId);
     const rows = this.database.query<{ request_json: string }>(`
       SELECT request_json
-      FROM agentkit_agent_approvals
+      FROM rein_agent_approvals
       WHERE run_id = ?
       ORDER BY rowid
     `).all(runId);
@@ -91,7 +91,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
   async list(): Promise<readonly AgentApprovalRequest[]> {
     const rows = this.database.query<{ request_json: string }>(`
       SELECT request_json
-      FROM agentkit_agent_approvals
+      FROM rein_agent_approvals
       ORDER BY rowid
     `).all();
     return Promise.resolve(rows.map((row) => JSON.parse(row.request_json) as AgentApprovalRequest));
@@ -118,7 +118,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
 
     const rows = this.database.query<{ request_json: string }>(`
       SELECT request_json
-      FROM agentkit_agent_approvals
+      FROM rein_agent_approvals
       ${where}
       ORDER BY created_at, run_id, approval_id
       LIMIT ?
@@ -139,7 +139,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
     let removed = 0;
     this.database.transaction((cutoff: number) => {
       this.database.query<never>(`
-        DELETE FROM agentkit_agent_approvals
+        DELETE FROM rein_agent_approvals
         WHERE created_at < ?
           AND json_extract(request_json, '$.decision') IS NOT NULL
       `).run(cutoff);
@@ -152,7 +152,7 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
   async delete(runId: string): Promise<void> {
     assertRunId(runId);
     this.database.query<never>(`
-      DELETE FROM agentkit_agent_approvals
+      DELETE FROM rein_agent_approvals
       WHERE run_id = ?
     `).run(runId);
     return Promise.resolve();

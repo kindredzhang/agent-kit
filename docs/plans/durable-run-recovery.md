@@ -1,4 +1,4 @@
-# AgentKit 实施计划：进程崩溃后的持久恢复
+# Rein 实施计划：进程崩溃后的持久恢复
 
 > 日期：2026-11-26。状态：设计已定稿，按切片实施。
 > 前置能力：Agent run、工具审批与暂停恢复、Session 持久化、共享预算、工具重试、运行前 Hooks。
@@ -57,7 +57,7 @@ export interface AgentRunStore {
 - 一个 `runId` 至多一个检查点，`save` 是 upsert（后写覆盖先写）。
 - 接口只做单条记录的读写，不承诺并发控制、排序或历史版本。
 - 提供 `InMemoryRunStore`（测试与单进程宿主）和 `SQLiteRunStore`（与 `SQLiteSessionStore` 同风格，`run_id` 主键，`save` 在事务内执行）。
-- 存储整体可被宿主替换；AgentKit 不规定序列化格式之外的任何存储约束。
+- 存储整体可被宿主替换；Rein 不规定序列化格式之外的任何存储约束。
 
 ### 4.2 写入时机
 
@@ -85,7 +85,7 @@ export interface AgentRunStore {
 - `resumeAt: "model_turn"` 时，校验要求 `pendingToolCalls` 为空、`approvalDecisions` 为空、没有 `pendingApproval`、最后一条消息不是尚未执行的助手工具调用消息。恢复后该轮按**普通轮次**处理：重新压缩上下文、重新请求模型，审批决定不跨轮沿用。
 - `resumeAt: "tool_batch"` 时保持现有校验与恢复路径不变。
 - 若保存的轮次高于新 Agent 的 `maxTurns`：`tool_batch` 沿用现有行为（再次以 `max_turns` 停止并保留快照）；`model_turn` 直接以 `max_turns` 停止，事件不带 `message`。
-- 旧版本 AgentKit 读到带 `resumeAt: "model_turn"` 的快照时，会因为 `pendingToolCalls` 为空而在校验阶段报错——安全失败，不会误执行。
+- 旧版本 Rein 读到带 `resumeAt: "model_turn"` 的快照时，会因为 `pendingToolCalls` 为空而在校验阶段报错——安全失败，不会误执行。
 
 `Agent.resume` 的输入扩展为「状态或运行 id 二选一」：
 
@@ -118,7 +118,7 @@ agent.resume({ state, approval: { ... } });       // 现有用法不变
 
 - **重放范围**：崩溃发生在模型请求期间，最多重发该轮请求；崩溃发生在工具执行期间，重发整个批次（包括已完成的工具）。
 - **幂等键**：同一批次重放时 `toolCallId` 保持不变。会产生外部副作用的工具应把 `toolCallId`（或宿主拼接的 `runId:toolCallId`）作为幂等键传给下游，由下游原子去重。审批决定的重放同理，不会重复请求审批。
-- **不可重放的动作**：无法幂等的工具（如发送通知、扣款）必须依赖下游幂等键；AgentKit 无法提供补偿。这与现有 `AgentRunState` 文档中的约束一致，只是从「暂停恢复」扩展到了「崩溃恢复」。
+- **不可重放的动作**：无法幂等的工具（如发送通知、扣款）必须依赖下游幂等键；Rein 无法提供补偿。这与现有 `AgentRunState` 文档中的约束一致，只是从「暂停恢复」扩展到了「崩溃恢复」。
 - **Session**：run 进行中不追加 Session，只在 `agent.completed` 时追加。检查点保存 `messagesToAppend`，恢复后完成时一次性写入。若崩溃恰好发生在「Session 已追加、检查点尚未删除」之间，恢复时的历史基线校验会发现 Session 已变化并拒绝恢复——安全失败，不会重复追加。
 - **用量与预算**：检查点保存预算账本。恢复 `model_turn` 检查点时，崩溃前那次模型请求的用量不可知，因此账本被标记为不完整：启用 `maxTotalTokens` 时下一次请求以 `usage_unavailable` 停止，未启用时正常继续。这是有意保守——崩溃的请求很可能已在服务端计费。`model_turn` 检查点本身在请求前写入，保存时账本仍是完整的。
 

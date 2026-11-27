@@ -1,13 +1,13 @@
-# AgentKit 路线图研究：主流 Agent 产品与框架的设计取舍
+# Rein 路线图研究：主流 Agent 产品与框架的设计取舍
 
 > 调研日期：2026-11-24。范围：只使用官方一手文档、规范和第一方仓库。
-> 目标：在 AgentKit 现有的「厂商无关消息/流事件 + Zod 工具 + 多轮工具循环」之上，判断接下来该补哪些原语、按什么顺序补、哪些应当推迟。
+> 目标：在 Rein 现有的「厂商无关消息/流事件 + Zod 工具 + 多轮工具循环」之上，判断接下来该补哪些原语、按什么顺序补、哪些应当推迟。
 
 ---
 
 ## 1. 现状盘点（作为基线）
 
-AgentKit 目前具备（读代码得出，非外部资料）：
+Rein 目前具备（读代码得出，非外部资料）：
 
 - `LanguageModel` 单一抽象 + 三个适配器（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages）；
 - `defineTool` 把 Zod schema 转成 JSON Schema，执行前校验；工具失败以错误结果回灌模型；
@@ -27,7 +27,7 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 ## 2. 对比：产品体验模式 vs 框架原语
 
-分开看这两层很重要：**产品体验**决定了原语必须长成什么样，**框架原语**才是 AgentKit 要写进 `src/core` 的东西。
+分开看这两层很重要：**产品体验**决定了原语必须长成什么样，**框架原语**才是 Rein 要写进 `src/core` 的东西。
 
 ### 2.1 产品体验层（用户可感知的六种模式）
 
@@ -53,19 +53,19 @@ AgentKit 目前具备（读代码得出，非外部资料）：
 
 **从这张表能读出的三条结论：**
 
-1. 这些产品普遍提供模型驱动的工具循环；LangGraph 则把显式状态图作为核心抽象，ADK 也提供顺序、循环和并行工作流。它们展示的是不同复杂度的控制流选项，不能据此断言某一种抽象适合所有场景。AgentKit 目前以单个循环为主，先把这个控制流的安全性、停止原因和可恢复性做好，再根据真实需求决定是否加图编排。
-2. **如果 AgentKit 要支持跨进程或稍后恢复的审批**，运行状态必须可序列化，恢复时需验证同一个 run/session 的身份与待审批调用。单进程内通过回调等待批准，则不必一开始就引入持久化快照。
-3. 持久化恢复不是事务：OpenAI 文档说明序列化的 `RunState` 本身不负责认证，且不保证 exactly-once；LangGraph 文档说明恢复时节点会从头执行，因此前置副作用要幂等。AgentKit 的 `AgentRunState` 同样是未签名快照；宿主必须负责鉴权、原子认领和防止并发重复恢复，外部副作用应使用幂等键。
+1. 这些产品普遍提供模型驱动的工具循环；LangGraph 则把显式状态图作为核心抽象，ADK 也提供顺序、循环和并行工作流。它们展示的是不同复杂度的控制流选项，不能据此断言某一种抽象适合所有场景。Rein 目前以单个循环为主，先把这个控制流的安全性、停止原因和可恢复性做好，再根据真实需求决定是否加图编排。
+2. **如果 Rein 要支持跨进程或稍后恢复的审批**，运行状态必须可序列化，恢复时需验证同一个 run/session 的身份与待审批调用。单进程内通过回调等待批准，则不必一开始就引入持久化快照。
+3. 持久化恢复不是事务：OpenAI 文档说明序列化的 `RunState` 本身不负责认证，且不保证 exactly-once；LangGraph 文档说明恢复时节点会从头执行，因此前置副作用要幂等。Rein 的 `AgentRunState` 同样是未签名快照；宿主必须负责鉴权、原子认领和防止并发重复恢复，外部副作用应使用幂等键。
 
 ### 2.3 一个容易被忽略的细节：工具并发不是免费的
 
 Agent SDK 的策略是**只读工具并发、写工具串行**，自定义工具默认串行，需要 `readOnlyHint` 注解才并发（[agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop)）。MCP 规范要求客户端把工具注解视为不可信信息，建议始终保留人类拒绝调用的能力，并建议把工具执行错误回传给模型以便纠正；规范没有强制要求每次调用都弹出确认界面（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
 
-AgentKit 已将工具注解与审批策略用于执行规划：明确标记为只读且非破坏性的工具可以并行，其他工具默认需要审批并顺序执行。注解仍是定义者声明，宿主需要在接入远程工具时验证其策略元数据。
+Rein 已将工具注解与审批策略用于执行规划：明确标记为只读且非破坏性的工具可以并行，其他工具默认需要审批并顺序执行。注解仍是定义者声明，宿主需要在接入远程工具时验证其策略元数据。
 
 ---
 
-## 3. 对 AgentKit 的分期建议
+## 3. 对 Rein 的分期建议
 
 排序原则：**先明确 run 为什么结束，再给有副作用的工具加执行策略，然后限制单次 run 的上下文增长，再实现跨 run Session；同一 run 的暂停恢复、追踪与扩展随后推进**。当前 `instructions` 已由 [Anthropic 适配器](../../src/providers/anthropic/messages.ts) 合并到顶层 `system` 参数，不需要列为待修问题。审批若只在当前进程内等待，不依赖可序列化快照；只有跨进程暂停/恢复才需要 run state。
 
@@ -84,7 +84,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `approveTool` 在工具执行前处理进程内审批。拒绝、缺少审批处理器、审批失败与取消都有明确的审批结果事件。
 - 工具执行错误仍会作为结果回填模型；审批回调收到工具定义、原始调用、校验后的参数与运行上下文。
 
-这一阶段明确了 AgentKit 作为库在工具执行上的默认策略：哪些工具可以并行、哪些调用需要宿主批准。工具注解不可信、策略由宿主控制的约束应写入文档（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
+这一阶段明确了 Rein 作为库在工具执行上的默认策略：哪些工具可以并行、哪些调用需要宿主批准。工具注解不可信、策略由宿主控制的约束应写入文档（[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)）。
 
 ### 阶段 2：run-local 上下文预算与压缩（已完成）
 
@@ -103,7 +103,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 - `AgentRunState` 保存当前消息、未执行的工具调用、审批决定、Session 基线、轮次与累计 usage；`agent.paused` 暴露审批暂停点，`agent.stopped` 在 `max_turns` 且仍有待执行工具调用时携带快照。`Agent.resume()` 沿用原 `runId`，不会重放产生待审批工具调用的模型请求。
 - 恢复时校验快照版本、provider、Agent 配置、工具定义与审批策略，并确认 Session 历史没有变化。增加轮数预算后可继续；若保存轮次已超出新上限，则再次以 `max_turns` 停止并保留快照。
 - 快照可 JSON 序列化，但不带签名，也不保证 exactly-once。宿主负责鉴权、保护敏感内容、原子认领与避免重复恢复；会产生副作用的工具应使用外部幂等键（[OpenAI human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)）。底层模型部署和自定义上下文估算器的兼容性也由宿主保证。
-- 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，AgentKit 先把第一层（线程内）做对，跨线程记忆属于应用层。
+- 明确不做：向量化长期记忆 / MemoryService。ADK 的 Session 与 Memory 是两层，Rein 先把第一层（线程内）做对，跨线程记忆属于应用层。
 
 ### 阶段 4：追踪与评估（已完成）
 
@@ -149,7 +149,7 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 包从「私有源码仓库」变成可安装的 ESM 包。
 
 - `package.json` 补全 `version`、`license`、`repository`、`files`、`exports` 与 `prepublishOnly`。`zod` 是唯一的运行时依赖。
-- `openai` 与 `@anthropic-ai/sdk` 在源码里只做类型用，因此移入可选 `peerDependencies`。适配器移出核心入口，改由 `agent-kit/openai` 与 `agent-kit/anthropic` 子路径导出——只用核心 API 的宿主不再需要安装任何厂商 SDK。
+- `openai` 与 `@anthropic-ai/sdk` 在源码里只做类型用，因此移入可选 `peerDependencies`。适配器移出核心入口，改由 `rein-kit/openai` 与 `rein-kit/anthropic` 子路径导出——只用核心 API 的宿主不再需要安装任何厂商 SDK。
 - SQLite 存储不再 import `bun:sqlite`，改为接受结构化 `SQLiteDatabase` / `SQLiteStatement` 接口。`bun:sqlite` 的 `Database` 天然满足该接口，`dist/**/*.d.ts` 因而不泄漏 Bun 类型。
 - 源码相对导入统一带 `.js` 后缀，声明文件在 `moduleResolution: "nodenext"` 下可解析；构建改用 `tsc`（`tsconfig.build.json`）保结构输出，产物同时供 Node ESM 与 Bun 使用。
 - `src/package.test.ts` 把上述约定固定成测试：出口形状、依赖面、核心声明不含厂商 SDK 与 `bun:sqlite`、声明文件相对导入带扩展名。
@@ -158,9 +158,9 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 此前所有检查都靠本地手动运行，改动是否破坏发布形态没有第三方见证。
 
-- `.github/workflows/ci.yml` 分四个 job：`typecheck`、`test`、`package`、`examples`。前三个在每次 push 到 `main` 和每个 PR 上运行；`examples` 只在 push 且仓库变量 `AGENTKIT_LIVE_EXAMPLES` 为 `true` 时运行。
+- `.github/workflows/ci.yml` 分四个 job：`typecheck`、`test`、`package`、`examples`。前三个在每次 push 到 `main` 和每个 PR 上运行；`examples` 只在 push 且仓库变量 `REIN_LIVE_EXAMPLES` 为 `true` 时运行。
 - `scripts/verify-package.ts` 把阶段 9 的消费者验收固化成脚本：`npm pack` 出 tarball，装进干净的临时项目，再检查 tarball 内容、Node 能否加载三个入口、可选 peer 是否被误装、以及消费者在 `moduleResolution: "nodenext"` 下只用核心 API 能否通过类型检查。CI 里执行它的是 `package` job，本地等价命令是 `bun run verify-package`。
-- 该脚本做过反向验证：在消费者里 import `agent-kit/openai` 且不装 SDK 时，`tsc` 如期报 `TS2307`——说明「核心类型可解析」的检查不是空转。
+- 该脚本做过反向验证：在消费者里 import `rein-kit/openai` 且不装 SDK 时，`tsc` 如期报 `TS2307`——说明「核心类型可解析」的检查不是空转。
 - `examples` job 的开关放在仓库变量而不是 secret 上，因为 GitHub Actions 的 job 级 `if` 只允许 `github`、`needs`、`vars`、`inputs` 四个上下文，`secrets` 在其中不可用（[context availability](https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability)）。开关打开但三个 secret 缺任何一个时，该 job 显式失败，避免「看着绿其实没跑」。
 
 ### 阶段 11：超时与墙钟预算（已完成）
@@ -175,19 +175,19 @@ AgentKit 已将工具注解与审批策略用于执行规划：明确标记为�
 
 ### 阶段 12：OpenTelemetry 导出（已完成）
 
-追踪记录早就能序列化，但把它接进主流可观测栈还得用户自己写映射。这一阶段把 `AgentTrace` 转成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树，放在新子路径 `agent-kit/otel`。
+追踪记录早就能序列化，但把它接进主流可观测栈还得用户自己写映射。这一阶段把 `AgentTrace` 转成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树，放在新子路径 `rein-kit/otel`。
 
 - **不发明 span 类型**。语义约定里只有 `invoke_agent`、`chat`、`execute_tool` 三类适用于本库；`plan` 明确要求「无法区分规划与普通推理时不应上报」，而轮次（`step`）在规范中没有对应物。所以 turn 不是 span，chat 与 execute_tool 直接挂在 run span 下。
-- **子路径依赖而非结构化接口**。原本打算沿用 `SQLiteDatabase` 的做法定义一个 `Tracer` 形状接口来绕开依赖，但父子关系只能经由 OTel 的 Context API（`trace.setSpan(context.active(), span)` + 把 context 传给 `startSpan`）建立，结构化接口在这里建不出真正的 span 树。于是与 `agent-kit/openai` 依赖 `openai` 同理：`@opentelemetry/api` 放进 optional peer，核心入口仍然零依赖。
+- **子路径依赖而非结构化接口**。原本打算沿用 `SQLiteDatabase` 的做法定义一个 `Tracer` 形状接口来绕开依赖，但父子关系只能经由 OTel 的 Context API（`trace.setSpan(context.active(), span)` + 把 context 传给 `startSpan`）建立，结构化接口在这里建不出真正的 span 树。于是与 `rein-kit/openai` 依赖 `openai` 同理：`@opentelemetry/api` 放进 optional peer，核心入口仍然零依赖。
 - **内容捕获必须显式开启**。`gen_ai.output.messages`、`gen_ai.tool.call.arguments`、`gen_ai.tool.call.result` 属于规范里的 opt-in 属性，可能含用户数据；它们只在 `AgentTraceCollector` 打开 `recordInputs` / `recordOutputs` 时才出现。OTel JS 的 `setAttribute` 只接受原始值与同类数组，所以这些 JSON 结构序列化成字符串。
 - **错误只留类型名**。既有的 trace 测试明确要求错误消息不进入追踪记录（可能含敏感信息），因此 `AgentTraceError` 只有 `name`；span 上的 `error.type` 与 `status.message` 都用它。这与规范要的「低基数错误标识」正好一致。
 - **`AgentTrace` 补了两个字段**：`error`（run 与工具各一份）和 `sessionId`（映射成 `gen_ai.conversation.id`）。`agent.started` / `agent.resumed` 事件相应带上可选 `sessionId`。
 - 采集器按 `record()` 调用时刻打时间戳，这一点在导出时才暴露出来：先把事件收集成数组再回放，所有 span 时长会塌成零。README 已写明要边流边记。
-- `verify-package` 增加了双向检查：没装 `@opentelemetry/api` 时 `agent-kit/otel` 必须报 `ERR_MODULE_NOT_FOUND`，装上后必须能导出真实 span 并通过 `nodenext` 类型检查。负向检查做过实证，不是空转。
+- `verify-package` 增加了双向检查：没装 `@opentelemetry/api` 时 `rein-kit/otel` 必须报 `ERR_MODULE_NOT_FOUND`，装上后必须能导出真实 span 并通过 `nodenext` 类型检查。负向检查做过实证，不是空转。
 
 ### 阶段 13：假模型（已完成）
 
-核心行为一直靠测试文件里手写的 `LanguageModel` 假对象验证，但每个测试文件都重写一遍流式分片、工具调用 id、终态推导，而且宿主要测自己的工具时同样得从头写。这一阶段把这套东西抽成公开子路径 `agent-kit/testing` 的 `createFakeModel()`。
+核心行为一直靠测试文件里手写的 `LanguageModel` 假对象验证，但每个测试文件都重写一遍流式分片、工具调用 id、终态推导，而且宿主要测自己的工具时同样得从头写。这一阶段把这套东西抽成公开子路径 `rein-kit/testing` 的 `createFakeModel()`。
 
 - **以「轮」为脚本单位，不以事件为单位**。使用者脑子里想的是「这一轮模型说什么」，不是「先发 3 个 text.delta 再发 finish」。分片、id 生成、`finishReason` 推导都属于实现细节，由假模型负责。
 - **脚本用尽必须报错，不能重复最后一轮**。静默重复是最容易写出来的"友好"行为，但它会让「Agent 是否多发了一次模型请求」这类断言永远为真——测试会意外通过，而不是失败。现在第二十次请求会得到 `The fake model has no scripted turn for request N.`。
@@ -232,19 +232,19 @@ Anthropic Messages 和 OpenAI Responses 将可回放的原生 assistant 输出�
 
 | 事项 | 为什么现在不做 |
 | --- | --- |
-| 显式图 / 状态机编排（LangGraph 式） | 四家主流仍以循环为主；AgentKit 尚无多写者、强确定性需求。等到出现「多分支 + 需要时间旅行」的真实场景再评估（[LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview)） |
+| 显式图 / 状态机编排（LangGraph 式） | 四家主流仍以循环为主；Rein 尚无多写者、强确定性需求。等到出现「多分支 + 需要时间旅行」的真实场景再评估（[LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview)） |
 | handoff 式多代理路由 | 需要「当前活跃代理」这一可变状态，与「运行是一次纯循环」的现有模型冲突；agents-as-tools 已覆盖绝大多数场景 |
 | 权限模式矩阵 / 分类器自动放行 | 产品层策略，依赖 approval 谓词；过早引入会让核心 API 绑定一种 UX |
 | A2A、托管运行环境、沙箱执行 | 跨进程/跨组织的协议与运行时，和「库」的定位不同（ADK 的 A2A 面向部署编排，[adk.dev](https://adk.dev/)） |
 | 服务端托管会话（`previous_response_id` / Conversations） | 依赖具体厂商能力，属于适配器可选优化；核心状态必须先在本地可序列化（[conversation state](https://developers.openai.com/api/docs/guides/conversation-state)） |
 | 向量长期记忆 | 应用层职责，且需要存储选型；先做完线程内 Session |
-| UI/harness 抽象层（AI SDK 的 Chat UI、`HarnessAgent`） | AgentKit 目前是运行时库，没有 UI 宿主；先保证事件流可驱动 UI（[AI SDK intro](https://ai-sdk.dev/docs/introduction)） |
+| UI/harness 抽象层（AI SDK 的 Chat UI、`HarnessAgent`） | Rein 目前是运行时库，没有 UI 宿主；先保证事件流可驱动 UI（[AI SDK intro](https://ai-sdk.dev/docs/introduction)） |
 
 ---
 
 ## 4. 给实现的几条硬约束
 
-1. **核心行为通过公开的 `Agent.stream()` 和 `Agent.resume()` 测试**。使用 `agent-kit/testing` 的 `createFakeModel()` 或等价的确定性假实现验证厂商无关的行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
+1. **核心行为通过公开的 `Agent.stream()` 和 `Agent.resume()` 测试**。使用 `rein-kit/testing` 的 `createFakeModel()` 或等价的确定性假实现验证厂商无关的行为；只有修改 provider adapter 或其序列化时，才要求受影响的适配器分别通过测试。
 2. **运行状态通过事件观察**。现有 `AgentEvent` 已经足够细（tool.call.arguments.delta 级别）；审批、压缩与限额等运行状态通过事件暴露，宿主策略回调提供决定，但不替代事件时间线。
 3. **`ToolExecutionContext` 需要扩张而不是被替换**：宿主工具确有需要时可增加 `sessionId`、`approvalId`；`runState` 引用留待暂停/恢复方案确定后再加入，保持现在的 `runId/turn/toolCallId/signal`。
 4. **不要把 `finishReason` 当终止原因用**。AI SDK 的文档已经踩过这个坑：`finishReason` 只是最后一次模型调用，循环是否因步数或审批而停，必须由独立的终止原因表达（[loop control](https://ai-sdk.dev/docs/agents/loop-control)）。
@@ -255,7 +255,7 @@ Anthropic Messages 和 OpenAI Responses 将可回放的原生 assistant 输出�
 
 - **LangGraph 的持久化模式（`exit` / `async` / `sync`）与超步边界语义**：多次抓取 `persistence`、`durable-execution`、`use-graph-api` 页面均未返回这三者的说明，仅确认了 checkpointer 按 `thread_id` 存 checkpoint、Store 跨线程（[persistence](https://docs.langchain.com/oss/python/langgraph/persistence)）。上文没有引用这三个模式名。
 - **MCP 工具注解的逐条语义**（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 各自默认值）：只验证到规范页面写明「`annotations` 为可选、客户端必须视作不可信」，未取到单独注解语义页；因此本文对四类 hint 的描述按 AI SDK 与 Anthropic 文档中的用法表述，未引用 MCP 注解页的原文定义。
-- **OpenAI Agents SDK 的 JS/TS 版是否已包含审批**：Python 文档有完整的 `needs_approval` / `RunState` 审批说明；JS 仓库页面只列出 human-in-the-loop，未点名 approvals（[openai-agents-js](https://github.com/openai/openai-agents-js)）。若要在 AgentKit 里对齐 JS 生态，需再核一次 JS 文档。
+- **OpenAI Agents SDK 的 JS/TS 版是否已包含审批**：Python 文档有完整的 `needs_approval` / `RunState` 审批说明；JS 仓库页面只列出 human-in-the-loop，未点名 approvals（[openai-agents-js](https://github.com/openai/openai-agents-js)）。若要在 Rein 里对齐 JS 生态，需再核一次 JS 文档。
 - **ADK 的 `sub_agents` / `transfer_to_agent` 具体 API**：`workflows` 概览页只给了四种工作流风格，未描述这两个符号；本文对 ADK 多代理只引用了概览层结论。
 - **AI SDK Core 是否提供内建会话持久化**：`agents` 与 `loop-control` 两页均未提及持久化，`intro` 页也未提；本文按「不提供」处理，属推断而非文档明文。
 - **Claude Agent SDK 的 hooks 事件全表**：抓取到的 hooks 页面正文被截断（完整输出落盘），本文只引用了 `agent-loop` 页面列出的常用 hook 与 `PreCompact` 的 `trigger` 字段。

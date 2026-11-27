@@ -6,7 +6,7 @@ import type { SQLiteDatabase } from "./sqlite.js";
 export class SQLiteRunStore implements AgentRunStore {
   constructor(private readonly database: SQLiteDatabase) {
     this.database.run(`
-      CREATE TABLE IF NOT EXISTS agentkit_agent_runs (
+      CREATE TABLE IF NOT EXISTS rein_agent_runs (
         run_id TEXT PRIMARY KEY,
         state_json TEXT NOT NULL
       )
@@ -17,7 +17,7 @@ export class SQLiteRunStore implements AgentRunStore {
     assertRunId(state?.runId);
     const stateJson = JSON.stringify(state);
     this.database.query<never>(`
-      INSERT INTO agentkit_agent_runs (run_id, state_json)
+      INSERT INTO rein_agent_runs (run_id, state_json)
       VALUES (?, ?)
       ON CONFLICT (run_id) DO UPDATE SET state_json = excluded.state_json
     `).run(state.runId, stateJson);
@@ -28,7 +28,7 @@ export class SQLiteRunStore implements AgentRunStore {
     assertRunId(runId);
     const row = this.database.query<{ state_json: string }>(`
       SELECT state_json
-      FROM agentkit_agent_runs
+      FROM rein_agent_runs
       WHERE run_id = ?
     `).get(runId);
     return Promise.resolve(row ? JSON.parse(row.state_json) as AgentRunState : undefined);
@@ -37,7 +37,7 @@ export class SQLiteRunStore implements AgentRunStore {
   async delete(runId: string): Promise<void> {
     assertRunId(runId);
     this.database.query<never>(`
-      DELETE FROM agentkit_agent_runs
+      DELETE FROM rein_agent_runs
       WHERE run_id = ?
     `).run(runId);
     return Promise.resolve();

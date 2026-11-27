@@ -21,8 +21,8 @@ if (toRun.length === 0) {
   process.exit(1);
 }
 
-if (!process.env.OPENAI_BASE_URL || !process.env.OPENAI_API_KEY || !process.env.AGENTKIT_MODEL) {
-  console.error("Set OPENAI_BASE_URL, OPENAI_API_KEY and AGENTKIT_MODEL, then rerun.");
+if (!process.env.OPENAI_BASE_URL || !process.env.OPENAI_API_KEY || !process.env.REIN_MODEL) {
+  console.error("Set OPENAI_BASE_URL, OPENAI_API_KEY and REIN_MODEL, then rerun.");
   process.exit(2);
 }
 

@@ -12,7 +12,7 @@ const input = { messages: [{ role: "user" as const, content: "start" }] };
 function memoryTracer() {
   const exporter = new InMemorySpanExporter();
   const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
-  return { exporter, tracer: provider.getTracer("agent-kit-test") };
+  return { exporter, tracer: provider.getTracer("rein-kit-test") };
 }
 
 async function collect(stream: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {

@@ -6,15 +6,15 @@ import type { SQLiteDatabase } from "./sqlite.js";
 export class SQLiteSessionStore implements SessionStore {
   constructor(private readonly database: SQLiteDatabase) {
     this.database.run(`
-      CREATE TABLE IF NOT EXISTS agentkit_session_messages (
+      CREATE TABLE IF NOT EXISTS rein_session_messages (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
         message_json TEXT NOT NULL
       )
     `);
     this.database.run(`
-      CREATE INDEX IF NOT EXISTS agentkit_session_messages_session_sequence
-      ON agentkit_session_messages (session_id, sequence)
+      CREATE INDEX IF NOT EXISTS rein_session_messages_session_sequence
+      ON rein_session_messages (session_id, sequence)
     `);
   }
 
@@ -22,7 +22,7 @@ export class SQLiteSessionStore implements SessionStore {
     assertSessionId(sessionId);
     const rows = this.database.query<{ message_json: string }>(`
       SELECT message_json
-      FROM agentkit_session_messages
+      FROM rein_session_messages
       WHERE session_id = ?
       ORDER BY sequence ASC
     `).all(sessionId);
@@ -34,7 +34,7 @@ export class SQLiteSessionStore implements SessionStore {
     if (messages.length === 0) return;
 
     const insert = this.database.query<never>(`
-      INSERT INTO agentkit_session_messages (session_id, message_json)
+      INSERT INTO rein_session_messages (session_id, message_json)
       VALUES (?, ?)
     `);
     const insertMessages = this.database.transaction((id: string, entries: readonly AgentMessage[]) => {
@@ -48,7 +48,7 @@ export class SQLiteSessionStore implements SessionStore {
   async clear(sessionId: string): Promise<void> {
     assertSessionId(sessionId);
     this.database.query<never>(`
-      DELETE FROM agentkit_session_messages
+      DELETE FROM rein_session_messages
       WHERE session_id = ?
     `).run(sessionId);
   }

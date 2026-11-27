@@ -1,6 +1,6 @@
-# AgentKit 下一阶段实施计划：MCP 工具接入与子代理
+# Rein 下一阶段实施计划：MCP 工具接入与子代理
 
-> 日期：2026-11-26。依据：[路线图阶段 5](../research/agentkit-roadmap.md)。
+> 日期：2026-11-26。依据：[路线图阶段 5](../research/rein-roadmap.md)。
 > 前置已完成：停止原因、工具策略与审批、上下文预算、Session、同一 run 暂停恢复、追踪与工具轨迹评估。
 
 ---
@@ -20,7 +20,7 @@
 - MCP 的 resources、prompts、sampling、elicitation、OAuth 与 SSE 传输。
 - handoff 式多代理路由、显式图编排。
 - 跨代理预算（美元或 token）。先完成深度与并发上限，预算单独排期。
-- 图片/音频工具结果映射到模型消息：AgentKit 消息目前只有文本工具结果。
+- 图片/音频工具结果映射到模型消息：Rein 消息目前只有文本工具结果。
 
 ---
 

@@ -58,7 +58,7 @@ async function packTarball(workspace: string): Promise<string> {
 async function installIntoConsumer(consumer: string, tarball: string): Promise<void> {
   await writeFile(
     join(consumer, "package.json"),
-    `${JSON.stringify({ name: "agent-kit-consumer", private: true, type: "module" }, null, 2)}\n`,
+    `${JSON.stringify({ name: "rein-kit-consumer", private: true, type: "module" }, null, 2)}\n`,
   );
   await runOrFail(
     consumer,
@@ -79,18 +79,18 @@ async function assertVendorSdksAreNotInstalled(consumer: string): Promise<void> 
 async function assertOtelEntryPointFailsWithoutItsPeer(consumer: string): Promise<void> {
   const script = `
 try {
-  await import("agent-kit/otel");
+  await import("rein-kit/otel");
 } catch (error) {
   if (error?.code === "ERR_MODULE_NOT_FOUND" && String(error.message).includes("@opentelemetry/api")) {
-    console.log("agent-kit/otel correctly requires @opentelemetry/api");
+    console.log("rein-kit/otel correctly requires @opentelemetry/api");
     process.exit(0);
   }
   throw error;
 }
-throw new Error("agent-kit/otel loaded without @opentelemetry/api installed");
+throw new Error("rein-kit/otel loaded without @opentelemetry/api installed");
 `;
   await writeFile(join(consumer, "otel-absent.mjs"), script.trimStart());
-  await runOrFail(consumer, ["node", "otel-absent.mjs"], "Loading agent-kit/otel without its peer dependency");
+  await runOrFail(consumer, ["node", "otel-absent.mjs"], "Loading rein-kit/otel without its peer dependency");
 }
 
 async function assertOtelTypesResolveWithItsPeer(consumer: string): Promise<void> {
@@ -101,8 +101,8 @@ async function assertOtelTypesResolveWithItsPeer(consumer: string): Promise<void
   );
   const script = `
 import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
-import { exportAgentTrace } from "agent-kit/otel";
-import { Agent, AgentTraceCollector } from "agent-kit";
+import { exportAgentTrace } from "rein-kit/otel";
+import { Agent, AgentTraceCollector } from "rein-kit";
 
 const spans = [];
 const tracer = {
@@ -142,8 +142,8 @@ if (!agentSpan) throw new Error("No invoke_agent span was exported");
 if (agentSpan.attributes["gen_ai.operation.name"] !== "invoke_agent") throw new Error("Missing gen_ai.operation.name");
 if (agentSpan.attributes["gen_ai.usage.input_tokens"] !== 4) throw new Error("Missing token usage");
 if (!spans.some((span) => span.name === "chat test-model")) throw new Error("No chat span was exported");
-if (typeof exportAgentTrace !== "function") throw new Error("agent-kit/otel did not export exportAgentTrace");
-console.log(\`agent-kit/otel exported \${spans.length} spans against the real @opentelemetry/api\`);
+if (typeof exportAgentTrace !== "function") throw new Error("rein-kit/otel did not export exportAgentTrace");
+console.log(\`rein-kit/otel exported \${spans.length} spans against the real @opentelemetry/api\`);
 `;
   await writeFile(join(consumer, "otel-present.mjs"), script.trimStart());
   await runOrFail(consumer, ["node", "otel-present.mjs"], "Exporting a trace against the real OpenTelemetry API");
@@ -151,8 +151,8 @@ console.log(\`agent-kit/otel exported \${spans.length} spans against the real @o
   await writeFile(
     join(consumer, "otel-consumer.ts"),
     `import type { Tracer } from "@opentelemetry/api";
-import { exportAgentTrace } from "agent-kit/otel";
-import type { AgentTrace } from "agent-kit";
+import { exportAgentTrace } from "rein-kit/otel";
+import type { AgentTrace } from "rein-kit";
 
 export function exportTrace(trace: AgentTrace, tracer: Tracer): void {
   exportAgentTrace(trace, { tracer, model: "test-model", agentName: "Researcher" });
@@ -180,32 +180,32 @@ export function exportTrace(trace: AgentTrace, tracer: Tracer): void {
     )}\n`,
   );
   const tsc = join(root, "node_modules", ".bin", "tsc");
-  await runOrFail(consumer, [tsc, "-p", "tsconfig.otel.json"], "Type-checking agent-kit/otel against the real OpenTelemetry API");
+  await runOrFail(consumer, [tsc, "-p", "tsconfig.otel.json"], "Type-checking rein-kit/otel against the real OpenTelemetry API");
 }
 
 async function assertNodeLoadsEntryPoints(consumer: string): Promise<void> {
   const script = `
 const entryPoints = ${JSON.stringify(entryPoints.filter((name) => name !== "otel"))};
 for (const name of entryPoints) {
-  const specifier = name === "index" ? "agent-kit" : \`agent-kit/\${name}\`;
+  const specifier = name === "index" ? "rein-kit" : \`rein-kit/\${name}\`;
   const loaded = await import(specifier);
   if (Object.keys(loaded).length === 0) throw new Error(\`\${specifier} exported nothing\`);
 }
-const { Agent, defineTool, AgentApprovalQueue, SQLiteRunStore } = await import("agent-kit");
+const { Agent, defineTool, AgentApprovalQueue, SQLiteRunStore } = await import("rein-kit");
 for (const [name, value] of Object.entries({ Agent, defineTool, AgentApprovalQueue, SQLiteRunStore })) {
-  if (typeof value !== "function") throw new Error(\`agent-kit did not export a constructor for \${name}\`);
+  if (typeof value !== "function") throw new Error(\`rein-kit did not export a constructor for \${name}\`);
 }
-const { createFakeModel } = await import("agent-kit/testing");
+const { createFakeModel } = await import("rein-kit/testing");
 const fake = createFakeModel({ turns: [{ text: "hi" }] });
 const fakeEvents = [];
 for await (const event of new Agent({ model: fake }).stream({ messages: [{ role: "user", content: "hi" }] })) {
   fakeEvents.push(event);
 }
-if (fakeEvents.at(-1)?.type !== "agent.completed") throw new Error("agent-kit/testing did not drive a run to completion");
-const { OpenAIChatCompletionsModel } = await import("agent-kit/openai");
-const { AnthropicMessagesModel } = await import("agent-kit/anthropic");
-if (typeof OpenAIChatCompletionsModel !== "function") throw new Error("agent-kit/openai is missing OpenAIChatCompletionsModel");
-if (typeof AnthropicMessagesModel !== "function") throw new Error("agent-kit/anthropic is missing AnthropicMessagesModel");
+if (fakeEvents.at(-1)?.type !== "agent.completed") throw new Error("rein-kit/testing did not drive a run to completion");
+const { OpenAIChatCompletionsModel } = await import("rein-kit/openai");
+const { AnthropicMessagesModel } = await import("rein-kit/anthropic");
+if (typeof OpenAIChatCompletionsModel !== "function") throw new Error("rein-kit/openai is missing OpenAIChatCompletionsModel");
+if (typeof AnthropicMessagesModel !== "function") throw new Error("rein-kit/anthropic is missing AnthropicMessagesModel");
 console.log(\`node \${process.version} loaded \${entryPoints.length} entry points\`);
 `;
   await writeFile(join(consumer, "load.mjs"), script.trimStart());
@@ -243,8 +243,8 @@ import {
   InMemoryRunStore,
   SQLiteRunStore,
   defineTool,
-} from "agent-kit";
-import type { AgentEvent, AgentRunState, LanguageModel, MessageDelta } from "agent-kit";
+} from "rein-kit";
+import type { AgentEvent, AgentRunState, LanguageModel, MessageDelta } from "rein-kit";
 
 const echo = defineTool({
   name: "echo",
@@ -286,7 +286,7 @@ async function assertTarballShape(tarball: string): Promise<void> {
 
 async function main(): Promise<void> {
   await assertDistIsBuilt();
-  const workspace = await mkdtemp(join(tmpdir(), "agent-kit-package-"));
+  const workspace = await mkdtemp(join(tmpdir(), "rein-kit-package-"));
   const tarball = await packTarball(workspace);
   await assertTarballShape(tarball);
 

@@ -37,10 +37,10 @@ test("accepts any database that satisfies the SQLiteDatabase interface", async (
   const approvals = new SQLiteApprovalStore(database);
   expect(await approvals.list()).toEqual([]);
 
-  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS agentkit_session_messages")))
+  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS rein_session_messages")))
     .toBe(true);
-  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS agentkit_agent_runs")))
+  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS rein_agent_runs")))
     .toBe(true);
-  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS agentkit_agent_approvals")))
+  expect(database.statements.some((sql) => sql.startsWith("CREATE TABLE IF NOT EXISTS rein_agent_approvals")))
     .toBe(true);
 });

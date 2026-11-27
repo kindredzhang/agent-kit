@@ -56,7 +56,7 @@ jobs:
     name: Examples against a live endpoint
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: ${{ vars.AGENTKIT_LIVE_EXAMPLES == 'true' && github.event_name == 'push' }}
+    if: ${{ vars.REIN_LIVE_EXAMPLES == 'true' && github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -67,18 +67,18 @@ jobs:
         env:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AGENTKIT_MODEL: ${{ secrets.AGENTKIT_MODEL }}
+          REIN_MODEL: ${{ secrets.REIN_MODEL }}
         run: |
           missing=""
           [ -n "$OPENAI_BASE_URL" ] || missing="$missing OPENAI_BASE_URL"
           [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
-          [ -n "$AGENTKIT_MODEL" ] || missing="$missing AGENTKIT_MODEL"
+          [ -n "$REIN_MODEL" ] || missing="$missing REIN_MODEL"
           if [ -n "$missing" ]; then
-            echo "::error::Repository variable AGENTKIT_LIVE_EXAMPLES is true, but these secrets are not set:$missing"
+            echo "::error::Repository variable REIN_LIVE_EXAMPLES is true, but these secrets are not set:$missing"
             exit 1
           fi
       - run: bun run examples
         env:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AGENTKIT_MODEL: ${{ secrets.AGENTKIT_MODEL }}
+          REIN_MODEL: ${{ secrets.REIN_MODEL }}

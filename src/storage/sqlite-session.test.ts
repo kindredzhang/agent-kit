@@ -7,7 +7,7 @@ import { SQLiteSessionStore } from "./sqlite-session.js";
 import type { AgentMessage } from "../core/types.js";
 
 test("persists isolated session histories across database connections", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agent-kit-session-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-kit-session-"));
   const databasePath = join(directory, "sessions.sqlite");
   const messages: AgentMessage[] = [
     { role: "user", content: "Look this up." },
@@ -53,7 +53,7 @@ test("persists isolated session histories across database connections", async ()
 });
 
 test("rolls back a session append when a message cannot be serialized", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agent-kit-session-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-kit-session-"));
   const cyclicMessage = { role: "user", content: "Cannot serialize." } as AgentMessage & { self: unknown };
   cyclicMessage.self = cyclicMessage;
 

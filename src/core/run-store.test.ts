@@ -67,7 +67,7 @@ test("rejects an empty run id", async () => {
 });
 
 test("persists a checkpoint across database connections", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agent-kit-run-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-kit-run-"));
   const databasePath = join(directory, "runs.sqlite");
 
   try {
@@ -98,7 +98,7 @@ test("reports a corrupted checkpoint instead of returning partial state", async 
   const database = new Database(":memory:");
   try {
     const store = new SQLiteRunStore(database);
-    database.run("INSERT INTO agentkit_agent_runs (run_id, state_json) VALUES (?, ?)", ["broken", "{not json"]);
+    database.run("INSERT INTO rein_agent_runs (run_id, state_json) VALUES (?, ?)", ["broken", "{not json"]);
     expect(store.load("broken")).rejects.toThrow();
   } finally {
     database.close();

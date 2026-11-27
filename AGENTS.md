@@ -1,6 +1,6 @@
 # Agent Instructions
 
-- 项目暂用名称为 AgentKit；命名可随项目演进调整。
+- 项目品牌名称为 Rein，npm 包名为 `rein-kit`。
 - 使用 TypeScript 和 Bun。
 - 源码文件中不写注释；通过清晰的命名、类型和模块结构表达意图。
 - Agent、消息、事件和模型接口保持厂商无关。

@@ -1,4 +1,4 @@
-# AgentKit 使用指南
+# Rein 使用指南
 
 第一次使用？先看[快速开始](../README.md#快速开始)。下面的片段在已配置的 `model` 或 `agent` 基础上展示各项功能；完整的可运行代码见[示例目录](../examples/README.md)。
 
@@ -17,7 +17,7 @@
 `user.content` 可以是字符串，也可以是按顺序混排的 `AgentContentPart[]`。OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 都支持文本、URL 或 Base64 图片，以及内联 PDF。使用支持对应输入的模型。
 
 ```ts
-import type { AgentMessage } from "agent-kit";
+import type { AgentMessage } from "rein-kit";
 
 const message: AgentMessage = {
   role: "user",
@@ -113,18 +113,18 @@ Hook 收到的消息、工具定义和原始工具调用是副本，修改它们
 
 `SessionStore` 保存可跨多个 Agent run 延续的对话历史。传入 `sessionId` 时，Agent 会加载历史，并将 `messages` 视为本次新增输入；`instructions` 每次都会加入模型请求，但不会存入 Session。内存实现适用于单进程使用，SQLite 实现适用于本地持久化。
 
-下面使用 Bun 的 SQLite 和 Anthropic Messages。设置 `ANTHROPIC_API_KEY` 和相应的 `AGENTKIT_MODEL`，用同一个 `sessionId` 运行两次并更换第二次的输入，就能复用已保存的对话。
+下面使用 Bun 的 SQLite 和 Anthropic Messages。设置 `ANTHROPIC_API_KEY` 和相应的 `REIN_MODEL`，用同一个 `sessionId` 运行两次并更换第二次的输入，就能复用已保存的对话。
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
 import { Database } from "bun:sqlite";
-import { Agent, SQLiteSessionStore } from "agent-kit";
-import { AnthropicMessagesModel } from "agent-kit/anthropic";
+import { Agent, SQLiteSessionStore } from "rein-kit";
+import { AnthropicMessagesModel } from "rein-kit/anthropic";
 
-const modelId = process.env.AGENTKIT_MODEL;
-if (!modelId) throw new Error("请设置 AGENTKIT_MODEL");
+const modelId = process.env.REIN_MODEL;
+if (!modelId) throw new Error("请设置 REIN_MODEL");
 
-const database = new Database("agentkit.sqlite");
+const database = new Database("rein.sqlite");
 const sessionStore = new SQLiteSessionStore(database);
 const agent = new Agent({
   model: new AnthropicMessagesModel({
@@ -161,7 +161,7 @@ database.close();
 "暂停 → 落库 → 另一个进程批准 → 恢复"这段样板由 `AgentApprovalQueue` 承担：
 
 ```ts
-import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore } from "agent-kit";
+import { Agent, AgentApprovalQueue, SQLiteApprovalStore, SQLiteRunStore } from "rein-kit";
 
 const approvals = new AgentApprovalQueue({ store: new SQLiteApprovalStore(database) });
 const agent = new Agent({ model, tools, approvalMode: "pause", runStore: new SQLiteRunStore(database) });
@@ -212,9 +212,9 @@ do {
 
 ```ts
 import { Database } from "bun:sqlite";
-import { Agent, SQLiteRunStore } from "agent-kit";
+import { Agent, SQLiteRunStore } from "rein-kit";
 
-const database = new Database("agentkit.sqlite");
+const database = new Database("rein.sqlite");
 const runStore = new SQLiteRunStore(database);
 const agent = new Agent({ model, tools, sessionStore, runStore });
 
@@ -239,7 +239,7 @@ for await (const event of agent.resume({ runId: savedRunId })) {
 - 清理规则：`agent.completed`、`agent.failed`、以及不带 `runState` 的 `agent.stopped` 会删除检查点；`agent.paused` 与带 `runState` 的 `max_turns` 停止会保留（并刷新）检查点。删除发生在终态事件交给宿主之前。中途放弃消费事件流不算终态，检查点会留下，宿主可显式 `runStore.delete(runId)`。
 - 检查点写入失败会让 run 以 `agent.failed` 结束。持久化是宿主显式要求的语义，静默降级会让宿主误以为存在可恢复点。
 
-**恢复语义是 at-least-once，不是 exactly-once。** 崩溃发生在模型请求期间，可能重发该轮请求；崩溃发生在工具执行期间，整个批次都会重放，包括已经完成的工具。重放时工具上下文中的 `runId`、`turn` 和 `toolCallId` 保持不变。可用这三个字段组成重放幂等键，不要只用可能跨轮重复的 `toolCallId`；需要跨 run 去重时，使用订单号等业务标识。对扣款、发通知等外部副作用，仍需下游原子去重，AgentKit 不提供补偿。
+**恢复语义是 at-least-once，不是 exactly-once。** 崩溃发生在模型请求期间，可能重发该轮请求；崩溃发生在工具执行期间，整个批次都会重放，包括已经完成的工具。重放时工具上下文中的 `runId`、`turn` 和 `toolCallId` 保持不变。可用这三个字段组成重放幂等键，不要只用可能跨轮重复的 `toolCallId`；需要跨 run 去重时，使用订单号等业务标识。对扣款、发通知等外部副作用，仍需下游原子去重，Rein 不提供补偿。
 
 检查点未签名，与 `AgentRunState` 的既有边界一致：宿主必须保护存储、在恢复前鉴权、原子认领并防止并发恢复同一个 `runId`。检查点可能包含敏感消息、工具参数和结果，访问控制与加密由宿主负责。Session 只在 `agent.completed` 时追加；若崩溃恰好发生在「Session 已写入、检查点尚未删除」之间，恢复时的历史基线校验会拒绝该快照，不会重复追加。从 `model_turn` 检查点恢复时，崩溃前那次请求的用量不可知，账本按不完整处理：启用 `maxTotalTokens` 会以 `usage_unavailable` 停止。子代理不继承 `runStore`，父 run 重放子代理工具调用会重新启动子 run。设计细节见 [docs/plans/durable-run-recovery.md](plans/durable-run-recovery.md)。
 
@@ -271,9 +271,9 @@ for await (const event of agent.stream({
 }
 ```
 
-调用次数或已报告的 `totalTokens` 达到上限时，下一个需要调用模型的 run 以 `budget_exceeded` 停止。**token 上限是软上限**：已经发出的请求仍可完成，尤其并行请求的实际总用量可能超过上限；工具也可能继续执行。启用 token 上限时，如果请求未正常完成或没有报告有效的 `totalTokens`，下一个需要调用模型的 run 以 `usage_unavailable` 停止。预算只覆盖 AgentKit 管理的模型请求，不包含工具自行发起的外部调用或收费；它不保证美元费用上限。
+调用次数或已报告的 `totalTokens` 达到上限时，下一个需要调用模型的 run 以 `budget_exceeded` 停止。**token 上限是软上限**：已经发出的请求仍可完成，尤其并行请求的实际总用量可能超过上限；工具也可能继续执行。启用 token 上限时，如果请求未正常完成或没有报告有效的 `totalTokens`，下一个需要调用模型的 run 以 `usage_unavailable` 停止。预算只覆盖 Rein 管理的模型请求，不包含工具自行发起的外部调用或收费；它不保证美元费用上限。
 
-`maxDurationMs` 统计的是**活跃执行时间**，不是墙钟跨度：run 因审批暂停、等待宿主决定的时间不计入，恢复后从快照里的 `elapsedMs` 接着算。额度耗尽时 AgentKit 中止在途的模型请求与工具执行，并以 `budget_exceeded` 停止，因此它同时兜住了「模型连接不返回」和「工具永不 resolve」这两种会让进程无限挂起的情况。单次工具尝试也可设置自己的 [`timeoutMs`](#工具超时)，但仍受整体时间预算约束。
+`maxDurationMs` 统计的是**活跃执行时间**，不是墙钟跨度：run 因审批暂停、等待宿主决定的时间不计入，恢复后从快照里的 `elapsedMs` 接着算。额度耗尽时 Rein 中止在途的模型请求与工具执行，并以 `budget_exceeded` 停止，因此它同时兜住了「模型连接不返回」和「工具永不 resolve」这两种会让进程无限挂起的情况。单次工具尝试也可设置自己的 [`timeoutMs`](#工具超时)，但仍受整体时间预算约束。
 
 审批暂停和 `max_turns` 快照保存共享账本，恢复时继续累计。旧版不含预算的快照仍可恢复，其此前的树级用量无法重建，恢复后从新的账本开始统计。快照在有其他模型请求执行时拒绝生成；宿主仍须确保快照的来源可信并避免重复恢复。
 
@@ -344,7 +344,7 @@ const fetchPage = defineTool({
 为每次 `agent.stream()` 或 `agent.resume()` 创建一个 `AgentTraceCollector`，并将事件传给 `record()`。`finish()` 返回可序列化的追踪记录，宿主可以写入自己的日志或遥测系统。追踪层级为 run → turn → 模型调用与工具执行，同时记录审批、上下文压缩、用量和运行结果。
 
 ```ts
-import { AgentTraceCollector, evaluateToolTrajectory } from "agent-kit";
+import { AgentTraceCollector, evaluateToolTrajectory } from "rein-kit";
 
 const collector = new AgentTraceCollector();
 for await (const event of agent.stream({
@@ -368,11 +368,11 @@ if (trace) {
 
 ### 导出为 OpenTelemetry Span
 
-`agent-kit/otel` 把一份追踪记录转换成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树。核心入口不依赖 OpenTelemetry；`@opentelemetry/api` 是可选 peer，只有导入这个子路径时才需要安装。
+`rein-kit/otel` 把一份追踪记录转换成符合 [GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai) 的 span 树。核心入口不依赖 OpenTelemetry；`@opentelemetry/api` 是可选 peer，只有导入这个子路径时才需要安装。
 
 ```ts
-import { AgentTraceCollector } from "agent-kit";
-import { exportAgentTrace } from "agent-kit/otel";
+import { AgentTraceCollector } from "rein-kit";
+import { exportAgentTrace } from "rein-kit/otel";
 
 const collector = new AgentTraceCollector();
 for await (const event of agent.stream({
@@ -387,7 +387,7 @@ if (trace) {
 }
 ```
 
-不传 `tracer` 时使用全局 tracer（`trace.getTracer("agent-kit")`），因此配置好 `NodeTracerProvider` 后无需额外接线。导出后的结构：
+不传 `tracer` 时使用全局 tracer（`trace.getTracer("rein-kit")`），因此配置好 `NodeTracerProvider` 后无需额外接线。导出后的结构：
 
 | Span | Kind | 名称 | 关键属性 |
 | --- | --- | --- | --- |
@@ -404,7 +404,7 @@ chat 与 execute_tool span 都挂在 run span 之下，并沿用追踪记录里�
 `evaluateAgentCases()` 在一条公开接缝上批量运行用例，并同时断言 **run 是否按预期结束、工具轨迹、最终文本与结构化结果**，而不只是工具调用顺序：
 
 ```ts
-import { evaluateAgentCases, observeAgentEvents } from "agent-kit";
+import { evaluateAgentCases, observeAgentEvents } from "rein-kit";
 
 const report = await evaluateAgentCases(
   [
@@ -446,13 +446,13 @@ if (!report.passed) {
 
 ### 用假模型写测试
 
-`agent-kit/testing` 提供一个按脚本回放的 `LanguageModel`，让宿主在不用网络、不用 API key 的情况下测试自己的工具、审批、重试和错误路径。它就是一个普通的 `LanguageModel`，能传给任何接受模型的构造器。
+`rein-kit/testing` 提供一个按脚本回放的 `LanguageModel`，让宿主在不用网络、不用 API key 的情况下测试自己的工具、审批、重试和错误路径。它就是一个普通的 `LanguageModel`，能传给任何接受模型的构造器。
 
 ```ts
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { Agent, defineTool } from "agent-kit";
-import { createFakeModel } from "agent-kit/testing";
+import { Agent, defineTool } from "rein-kit";
+import { createFakeModel } from "rein-kit/testing";
 
 const checkStock = defineTool({
   name: "check_stock",
@@ -503,7 +503,7 @@ test("缺货时如实报告", async () => {
 ```ts
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Agent, createMCPToolSource } from "agent-kit";
+import { Agent, createMCPToolSource } from "rein-kit";
 
 const client = new Client({ name: "my-host", version: "1.0.0" });
 await client.connect(new StdioClientTransport({ command: "my-mcp-server" }));
@@ -531,11 +531,11 @@ const agent = new Agent({
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
-import { Agent, createSubagentTool } from "agent-kit";
-import { AnthropicMessagesModel } from "agent-kit/anthropic";
+import { Agent, createSubagentTool } from "rein-kit";
+import { AnthropicMessagesModel } from "rein-kit/anthropic";
 
-const modelId = process.env.AGENTKIT_MODEL;
-if (!modelId) throw new Error("请设置 AGENTKIT_MODEL");
+const modelId = process.env.REIN_MODEL;
+if (!modelId) throw new Error("请设置 REIN_MODEL");
 
 const model = new AnthropicMessagesModel({ client: new Anthropic(), model: modelId });
 const researcher = createSubagentTool({
@@ -562,20 +562,20 @@ const agent = new Agent({ model, tools: [researcher], maxTurns: 10 });
 
 ## 安装与打包
 
-要把 AgentKit 装进自己的项目，在 AgentKit 仓库中安装依赖后构建并打包：
+要把 Rein 装进自己的项目，在 Rein 仓库中安装依赖后构建并打包：
 
 ```sh
 bun run build
-bun pm pack --filename agent-kit.tgz
+bun pm pack --filename rein-kit.tgz
 ```
 
 再到应用项目中安装生成的文件（替换成实际路径）：
 
 ```sh
-bun add /path/to/agent-kit.tgz
+bun add /path/to/rein-kit.tgz
 ```
 
-`zod` 是核心包唯一的运行时依赖。如果应用也直接导入 `zod` 来定义工具或输出 schema，请把它加入应用的依赖。接入真实模型时，安装对应的 `openai` 或 `@anthropic-ai/sdk`；使用 `agent-kit/otel` 时，安装 `@opentelemetry/api`。这些都是可选 peer dependency，`agent-kit/testing` 无额外依赖。
+`zod` 是核心包唯一的运行时依赖。如果应用也直接导入 `zod` 来定义工具或输出 schema，请把它加入应用的依赖。接入真实模型时，安装对应的 `openai` 或 `@anthropic-ai/sdk`；使用 `rein-kit/otel` 时，安装 `@opentelemetry/api`。这些都是可选 peer dependency，`rein-kit/testing` 无额外依赖。
 
 SQLite 存储类接受满足 `SQLiteDatabase` 接口的对象，所以包本身不依赖 Bun 运行时。要在 Node.js 中使用这些存储类，请把 `node:sqlite` 或其他 SQLite 客户端封装成该接口。
 
@@ -590,7 +590,7 @@ bun run verify-package
 ```
 
 - tarball 包含 `dist/`、`package.json`、README、LICENSE 和 GLOSSARY，不含源码、测试或示例
-- 五个入口 `agent-kit`、`agent-kit/openai`、`agent-kit/anthropic`、`agent-kit/otel`、`agent-kit/testing` 都能被 Node 直接 import，且 `createFakeModel` 能驱动一次完整 run
+- 五个入口 `rein-kit`、`rein-kit/openai`、`rein-kit/anthropic`、`rein-kit/otel`、`rein-kit/testing` 都能被 Node 直接 import，且 `createFakeModel` 能驱动一次完整 run
 - 消费者项目不会自动装上 `openai` / `@anthropic-ai/sdk` / `@opentelemetry/api`
 - 消费者在 `moduleResolution: "nodenext"` 下只用核心 API 即可通过类型检查
-- 没装 `@opentelemetry/api` 时 `agent-kit/otel` 明确报 `ERR_MODULE_NOT_FOUND`；装上后能导出真实 span 并通过类型检查
+- 没装 `@opentelemetry/api` 时 `rein-kit/otel` 明确报 `ERR_MODULE_NOT_FOUND`；装上后能导出真实 span 并通过类型检查

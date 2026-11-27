@@ -378,7 +378,7 @@ test("records a repeated tool call id in the same run as a new request", async (
 });
 
 test("lets another process decide and resume the run", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agent-kit-approval-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-kit-approval-"));
   const databasePath = join(directory, "state.sqlite");
   const executions: number[] = [];
 

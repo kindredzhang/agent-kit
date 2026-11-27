@@ -1,11 +1,11 @@
 {
-  "name": "agent-kit",
+  "name": "rein-kit",
   "version": "0.1.0",
   "description": "Vendor-agnostic agent loop for TypeScript: tools, approvals, durable runs, evals.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kindredzhang/agent-kit.git"
+    "url": "git+https://github.com/kindredzhang/rein-kit.git"
   },
   "type": "module",
   "exports": {

@@ -1,6 +1,6 @@
-# AgentKit
+# Rein
 
-AgentKit coordinates model conversations and executable tools to produce an assistant response.
+Rein coordinates model conversations and executable tools to produce an assistant response.
 
 ## Language
 

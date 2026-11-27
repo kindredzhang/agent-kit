@@ -1,4 +1,4 @@
-# AgentKit 实施计划：跨代理用量与共享预算
+# Rein 实施计划：跨代理用量与共享预算
 
 > 日期：2026-11-26。状态：A0–A5 的基础能力、测试和文档已实施；美元预算和跨进程账本仍属非目标。
 > 前置能力：Agent run、工具审批与暂停恢复、追踪、agents-as-tools。
@@ -32,7 +32,7 @@
 - **树用量**：父和各后代每次模型请求观察到的 usage 合计；只能记录 provider 实际报告的字段。未知值不得当作零来声称完整统计，结果应公开完整性状态。
 - 模型调用次数在实际进入 `LanguageModel.stream()` 前认领；即使请求失败或取消，已认领次数也不返还。尚未调用模型时取消不消耗名额。
 - 同一 provider 请求的 usage 事件可能有多种约定；实施前先验证现有适配器：当前 Agent 将每个 `usage` 事件相加，因此预算账本必须复用同一约定，并对每次请求避免重复记账。缺失或部分字段单独标记，不借用 `onUsage` 终态回调再次累计。
-- 仅由 AgentKit 管理并正确继承上下文的子 run 在范围内。工具内部自行创建的 Agent、直接调用外部模型或 MCP 服务的消耗不自动计入。
+- 仅由 Rein 管理并正确继承上下文的子 run 在范围内。工具内部自行创建的 Agent、直接调用外部模型或 MCP 服务的消耗不自动计入。
 
 ## 4. 行为设计
 
@@ -105,7 +105,7 @@ for await (const event of agent.stream({
 
 - `Agent.stream` 支持 `budget.maxModelCalls`；父 run、经 `createSubagentTool` 启动的后代共用账本。`agent.budget.updated` 提供树级快照，既有 run 级 `usage` 和 `onUsage` 不变；trace 保留最近的预算快照。
 - 审批与 `max_turns` 快照保存账本。旧版无账本快照可以恢复，但此前树用量无法重建，恢复后的 `usageComplete` 为 false；宿主必须保护快照来源并原子认领。
-- `usageComplete` 为 false 包括字段缺失、模型请求尚未完成或异常中断，以及旧快照缺少历史账本。它只表明 AgentKit 是否观察到完整字段，不保证等同实际账单。请求失败仍计入调用次数。
+- `usageComplete` 为 false 包括字段缺失、模型请求尚未完成或异常中断，以及旧快照缺少历史账本。它只表明 Rein 是否观察到完整字段，不保证等同实际账单。请求失败仍计入调用次数。
 - 安全审查：子代理的父层工具默认只读免审批，子代理自身的工具和审批独立；README 和阶段 B 计划已修正原有的过度安全承诺。并未改变默认权限策略。
 - 适配器审查：Anthropic 在 `finalMessage()` 后发出一个包含 input/output/total 的 usage；OpenAI Chat Completions 在收到包含 usage 的 chunk 时发出 usage；OpenAI Responses 在 completed 或 incomplete 事件包含 usage 时发出 usage。所有事件沿用当前 Agent 的累加约定，异常或缺失时不推断真实费用。
 - 边界：子 run 的暂停快照不会传回父 run，父代理只收到工具错误；账本检查点在其他模型请求进行中会拒绝创建。不可将此能力视为整棵并发任务树的持久化或恢复协议。

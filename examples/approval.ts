@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   const { model } = createExampleModel();
   console.log(`${describeSettings()}\n`);
 
-  const directory = await mkdtemp(join(tmpdir(), "agentkit-approval-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-approval-"));
   const databasePath = join(directory, "state.sqlite");
 
   try {

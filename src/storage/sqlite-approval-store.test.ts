@@ -19,7 +19,7 @@ function approvalRequest(runId: string, toolCallId: string): AgentApprovalReques
 }
 
 test("persists a decision across database connections", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "agent-kit-approval-"));
+  const directory = await mkdtemp(join(tmpdir(), "rein-kit-approval-"));
   const databasePath = join(directory, "approvals.sqlite");
 
   try {
@@ -125,7 +125,7 @@ test("prunes only decided requests older than the cutoff", async () => {
 test("backfills createdAt when the table predates the column", async () => {
   const database = new Database(":memory:");
   database.run(`
-    CREATE TABLE agentkit_agent_approvals (
+    CREATE TABLE rein_agent_approvals (
       run_id TEXT NOT NULL,
       approval_id TEXT NOT NULL,
       request_json TEXT NOT NULL,
@@ -133,7 +133,7 @@ test("backfills createdAt when the table predates the column", async () => {
     )
   `);
   database.query(`
-    INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json)
+    INSERT INTO rein_agent_approvals (run_id, approval_id, request_json)
     VALUES (?, ?, ?)
   `).run("run-1", "approval-1", JSON.stringify({ ...approvalRequest("run-1", "call_1"), createdAt: 1_500 }));
 
