@@ -141,6 +141,37 @@ test("keeps a rejected call from executing and still clears the request", async 
   expect(await queue.list()).toEqual([]);
 });
 
+test("stamps each request with when it was recorded", async () => {
+  let clock = 1_700_000_000_000;
+  const queue = new AgentApprovalQueue({ now: () => clock });
+  const agent = new Agent({ model: writeModel(), tools: [writeTool([])], approvalMode: "pause" });
+
+  await collect(queue.observe(agent.stream({ messages: [{ role: "user", content: "go" }] })));
+
+  const [request] = await queue.list();
+  expect(request?.createdAt).toBe(1_700_000_000_000);
+
+  clock += 5_000;
+  const [decided] = await queue.list();
+  expect(decided?.createdAt).toBe(1_700_000_000_000);
+});
+
+test("keeps createdAt stable when a request is decided", async () => {
+  const queue = new AgentApprovalQueue({ now: () => 1_700_000_000_000 });
+  const agent = new Agent({ model: writeModel(), tools: [writeTool([])], approvalMode: "pause" });
+  await collect(queue.observe(agent.stream({ messages: [{ role: "user", content: "go" }] })));
+
+  const [request] = await queue.list();
+  if (!request) throw new Error("expected a pending approval request");
+  const decided = await queue.decide({
+    runId: request.runId,
+    approvalId: request.approvalId,
+    decision: "approved",
+  });
+
+  expect(decided.createdAt).toBe(1_700_000_000_000);
+});
+
 test("lists decided requests only when asked", async () => {
   const queue = new AgentApprovalQueue();
   const agent = new Agent({ model: writeModel(), tools: [writeTool([])], approvalMode: "pause" });

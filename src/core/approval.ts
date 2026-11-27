@@ -16,6 +16,7 @@ export interface AgentApprovalRequest {
   approvalId: string;
   tool: { name: string; description: string; annotations?: ToolAnnotations };
   input: JsonValue;
+  createdAt: number;
   decision?: AgentApprovalDecision;
 }
 
@@ -65,12 +66,19 @@ export class InMemoryApprovalStore implements AgentApprovalStore {
   }
 }
 
+export interface AgentApprovalQueueOptions {
+  store?: AgentApprovalStore;
+  now?: () => number;
+}
+
 export class AgentApprovalQueue {
   private readonly store: AgentApprovalStore;
+  private readonly now: () => number;
   private readonly requested = new Map<string, AgentApprovalRequestedEvent>();
 
-  constructor(options: { store?: AgentApprovalStore } = {}) {
+  constructor(options: AgentApprovalQueueOptions = {}) {
     this.store = options.store ?? new InMemoryApprovalStore();
+    this.now = options.now ?? (() => performance.timeOrigin + performance.now());
   }
 
   async record(event: AgentPausedEvent): Promise<AgentApprovalRequest | undefined> {
@@ -105,6 +113,7 @@ export class AgentApprovalQueue {
       input: requested && requested.toolCall.id === event.pendingToolCall.id
         ? toJsonValue(requested.input)
         : event.pendingToolCall.input,
+      createdAt: this.now(),
     };
 
     await this.store.delete(event.runId);

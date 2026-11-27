@@ -42,6 +42,7 @@ export type { AgentRunStore } from "./core/run-store.js";
 export { AgentApprovalQueue, InMemoryApprovalStore } from "./core/approval.js";
 export type {
   AgentApprovalDecision,
+  AgentApprovalQueueOptions,
   AgentApprovalRequest,
   AgentApprovalStore,
   AgentPausedEvent,

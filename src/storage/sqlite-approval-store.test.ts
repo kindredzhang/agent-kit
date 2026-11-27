@@ -14,6 +14,7 @@ function approvalRequest(runId: string, toolCallId: string): AgentApprovalReques
     approvalId: `approval-${toolCallId}`,
     tool: { name: "write", description: "Write a record." },
     input: { value: 1 },
+    createdAt: 1_700_000_000_000,
   };
 }
 
