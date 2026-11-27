@@ -21,6 +21,7 @@ export type {
   AgentEvalFailure,
   AgentEvalObservation,
   AgentEvalObserver,
+  AgentEvalOptions,
   AgentEvalReport,
   AgentEvalResult,
 } from "./core/eval.js";

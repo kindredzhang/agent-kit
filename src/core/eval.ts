@@ -52,6 +52,10 @@ export interface AgentEvalReport {
   results: AgentEvalResult[];
 }
 
+export interface AgentEvalOptions {
+  concurrency?: number;
+}
+
 export type AgentEvalObserver<TInput> = (
   evalCase: AgentEvalCase<TInput>,
   signal: AbortSignal,
@@ -161,6 +165,7 @@ function compareCase(evalCase: AgentEvalCase, observation: AgentEvalObservation)
 export async function evaluateAgentCases<TInput>(
   cases: readonly AgentEvalCase<TInput>[],
   observe: AgentEvalObserver<TInput>,
+  options: AgentEvalOptions = {},
 ): Promise<AgentEvalReport> {
   const names = new Set<string>();
   for (const evalCase of cases) {
@@ -168,21 +173,35 @@ export async function evaluateAgentCases<TInput>(
     names.add(evalCase.name);
   }
 
-  const results: AgentEvalResult[] = [];
-  for (const evalCase of cases) {
-    const controller = new AbortController();
-    try {
-      const observation = await observe(evalCase, controller.signal);
-      const failures = compareCase(evalCase, observation);
-      results.push({ name: evalCase.name, passed: failures.length === 0, failures });
-    } catch (error) {
-      results.push({
-        name: evalCase.name,
-        passed: false,
-        failures: [{ check: "observation", error: error instanceof Error ? error : new Error(String(error)) }],
-      });
+  const concurrency = options.concurrency ?? 1;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new RangeError("concurrency must be a positive integer.");
+  }
+
+  const results: AgentEvalResult[] = new Array(cases.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < cases.length) {
+      const index = next;
+      next += 1;
+      const evalCase = cases[index]!;
+      const controller = new AbortController();
+      try {
+        const observation = await observe(evalCase, controller.signal);
+        const failures = compareCase(evalCase, observation);
+        results[index] = { name: evalCase.name, passed: failures.length === 0, failures };
+      } catch (error) {
+        results[index] = {
+          name: evalCase.name,
+          passed: false,
+          failures: [{ check: "observation", error: error instanceof Error ? error : new Error(String(error)) }],
+        };
+      }
     }
   }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, cases.length) }, worker));
 
   const passed = results.filter(({ passed: resultPassed }) => resultPassed).length;
   return {

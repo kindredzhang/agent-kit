@@ -360,6 +360,7 @@ const report = await evaluateAgentCases(
   ],
   async ({ input }, signal) =>
     observeAgentEvents(agent.stream({ messages: [{ role: "user", content: input }], signal })),
+  { concurrency: 4 },
 );
 
 if (!report.passed) {
@@ -374,7 +375,8 @@ if (!report.passed) {
 - `structuredOutput` 按值比较，忽略对象键顺序。
 - 观测函数抛错会转成 `observation` 失败，而不是让整批崩溃。
 - `observeAgentEvents()` 是便捷适配器，把事件流收集为 `stopReason`、`toolTrajectory`、`text`、`structuredOutput` 与 `usage`。需要更多信息时，可自行实现 `AgentEvalObserver`。
-- 用例名必须唯一；重复会在开始前报错。评估器不做并发调度，执行顺序由观测函数决定。
+- 用例名必须唯一；重复会在开始前报错。
+- 默认串行。传 `{ concurrency: 4 }` 可同时跑多个用例，`results` 始终保持输入顺序。并发只改变调度，不改变语义：每个用例仍拿到独立的 `AbortSignal`，失败仍只落在自己身上。
 - 这里评估的是**单次 run 的可观察结果**，不是模型质量评分；它不包含 LLM 裁判或数据集管理。需要判定开放式答案时，可在 `AgentEvalObserver` 中接入自己的裁判模型。
 
 默认只记录运行元数据。可独立开启 `recordInputs` 以记录本段事件中观察到的原始工具参数，或开启 `recordOutputs` 以记录助手正文和成功的工具结果。收集器只读取事件，因此模型请求正文和恢复快照中的载荷不会进入追踪。可通过 `requestModel` 补充模型标识。run 上的用量在终态或暂停事件提供累计值时覆盖为该值，因此同一 run 的分段用量不能直接相加。若宿主提前停止消费事件，仍可调用 `finish()` 得到 `interrupted` 记录。

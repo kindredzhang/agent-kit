@@ -151,3 +151,84 @@ test("checks only the expectations a case declares", async () => {
   const report = await evaluateAgentCases([{ name: "no checks", input: "go", expect: {} }], run("lookup"));
   expect(report.passed).toBe(true);
 });
+
+test("runs up to the requested number of cases at once", async () => {
+  let active = 0;
+  let peak = 0;
+
+  const report = await evaluateAgentCases(
+    ["a", "b", "c", "d", "e"].map((name) => ({ name, input: name, expect: {} })),
+    async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { stopReason: "completed" as const, toolTrajectory: [], text: "" };
+    },
+    { concurrency: 3 },
+  );
+
+  expect(peak).toBe(3);
+  expect(report.results.map(({ name }) => name)).toEqual(["a", "b", "c", "d", "e"]);
+});
+
+test("starts the next case as soon as a slot frees up", async () => {
+  const started: string[] = [];
+  const finish: Record<string, () => void> = {};
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  const pending = evaluateAgentCases(
+    ["first", "second", "third"].map((name) => ({ name, input: name, expect: {} })),
+    async (evalCase) => {
+      started.push(evalCase.name);
+      await new Promise<void>((resolve) => {
+        finish[evalCase.name] = resolve;
+      });
+      return { stopReason: "completed" as const, toolTrajectory: [], text: "" };
+    },
+    { concurrency: 1 },
+  );
+
+  await tick();
+  expect(started).toEqual(["first"]);
+
+  finish.first!();
+  await tick();
+  expect(started).toEqual(["first", "second"]);
+
+  finish.second!();
+  await tick();
+  expect(started).toEqual(["first", "second", "third"]);
+
+  finish.third!();
+  const report = await pending;
+  expect(report.summary).toEqual({ total: 3, passed: 3, failed: 0 });
+  expect(report.results.map(({ name }) => name)).toEqual(["first", "second", "third"]);
+});
+
+test("keeps an observation failure inside its own case under concurrency", async () => {
+  const report = await evaluateAgentCases(
+    [
+      { name: "ok-1", input: "a", expect: {} },
+      { name: "boom", input: "b", expect: {} },
+      { name: "ok-2", input: "c", expect: {} },
+    ],
+    async (evalCase) => {
+      if (evalCase.name === "boom") throw new Error("model unavailable");
+      return { stopReason: "completed" as const, toolTrajectory: [], text: "" };
+    },
+    { concurrency: 3 },
+  );
+
+  expect(report.results.map(({ name, passed }) => [name, passed])).toEqual([
+    ["ok-1", true],
+    ["boom", false],
+    ["ok-2", true],
+  ]);
+  expect(report.summary).toEqual({ total: 3, passed: 2, failed: 1 });
+});
+
+test("rejects a concurrency that is not a positive integer", async () => {
+  expect(evaluateAgentCases([], run(), { concurrency: 0 })).rejects.toThrow(RangeError);
+  expect(evaluateAgentCases([], run(), { concurrency: 1.5 })).rejects.toThrow(RangeError);
+});
