@@ -118,11 +118,26 @@ for await (const event of approvals.resume(agent, runId)) {
 }
 ```
 
+请求多起来之后用 `listPage()` 分页，而不是把整张表读进内存：
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await approvals.listPage({ limit: 20, ...(cursor ? { cursor } : {}) });
+  renderInbox(page.requests);
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
 - `observe()` 包装事件流：遇到 `tool.approval.requested` 记下工具描述与解析后的输入，遇到 `agent.paused` 落库，遇到终态（`agent.completed`、`agent.failed`、不带 `runState` 的 `agent.stopped`）清空该 run 的请求。抛出的异常不吞，事件流照常向上传播。
 - 请求以 `approvalId` 为键，不是 `toolCallId`。`toolCallId` 来自模型，同一 run 的后续轮次完全可能重复使用同一个值；`approvalId` 由 Agent 每次暂停时新生成，因此同一 run 可以有多次审批。每个 run 至多保留一条记录：新一次暂停会替换上一次。
 - `decide()` 只接受未决请求，重复决定与未知 `approvalId` 都抛错，避免两个审批人静默覆盖彼此。
 - `resume(agent, runId)` 读取该 run 的决定并转交给 `agent.resume`；没有决定时等价于普通的 `agent.resume({ runId })`，用于从崩溃检查点续跑。
-- 存储与 `AgentRunStore` 相互独立：`InMemoryApprovalStore` 用于测试，`SQLiteApprovalStore` 用于跨进程。`AgentApprovalQueue` 不负责鉴权、原子认领或并发去重，这些仍由宿主完成。
+- 存储与 `AgentRunStore` 相互独立：`InMemoryApprovalStore` 用于测试，`SQLiteApprovalStore` 用于跨进程。`AgentApprovalQueue` 不负责鉴权、原子认领或并发去重，这些仍由宿主完成。自定义存储实现需要满足 `AgentApprovalStore` 的六个方法（`save` / `load` / `list` / `listPage` / `prune` / `delete`）；分页与清理都定义在存储层，队列只是转发，否则自定义实现会在不知不觉中退化成全表扫描。
+
+**分页。** 游标是不透明的 `(createdAt, runId, approvalId)` 三元组，不是偏移量——偏移量在翻页之间有人审批时会跳过或重复记录，而三元组指的是全序中的一个位置。三个字段都参与排序，因为同一毫秒内可能有多条请求。`nextCursor` 缺失表示已到最后一页。`pendingOnly` 先于分页生效，所以「只看待审」时每页都是满的，不会被已决记录占位。SQLite 实现把过滤、排序和 `LIMIT` 都下推到查询里，并多取一行来判断是否还有下一页，不额外做 `COUNT`。
+
+**保留期。** `createdAt` 记录请求进入队列的时刻，`decide()` 不会改动它。`prune({ decidedBefore })` 删除早于该时刻的**已决**记录并返回删除条数；未决记录一律保留——它是某个人的待办，按时间清掉等于静默吞掉工作。确实要丢弃某个被遗弃 run 的待审请求时，用 `clear(runId)` 显式指定。SQLite 实现把删除与计数放进同一事务，用 `changes()` 读取实际删除行数，而不是先 `COUNT` 再 `DELETE`。
 
 ### 进程崩溃后的持久恢复
 

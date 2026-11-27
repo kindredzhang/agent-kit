@@ -116,6 +116,14 @@ _Avoid_: Checkpoint
 A store of Approval requests that a host reads and decides outside the process that paused the Agent run.
 _Avoid_: Run store
 
+**Approval cursor**:
+An opaque marker naming a position in the queue's order, used to fetch the page after it without skipping or repeating requests.
+_Avoid_: Offset, page number
+
+**Approval retention**:
+The policy for when decided Approval requests stop being kept, expressed as the age past which they are pruned.
+_Avoid_: Cleanup job, TTL
+
 **Subagent**:
 An Agent run started on behalf of a parent Agent run, exposed to that parent as a Tool whose result is the child run's final text.
 _Avoid_: Agent run, handoff
