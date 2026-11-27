@@ -1,5 +1,16 @@
-import { assertApprovalId, assertToolCallId } from "../core/approval.js";
-import type { AgentApprovalRequest, AgentApprovalStore } from "../core/approval.js";
+import {
+  assertApprovalId,
+  assertPageQuery,
+  assertToolCallId,
+  decodeApprovalCursor,
+  encodeApprovalCursor,
+} from "../core/approval.js";
+import type {
+  AgentApprovalPage,
+  AgentApprovalPageQuery,
+  AgentApprovalRequest,
+  AgentApprovalStore,
+} from "../core/approval.js";
 import { assertRunId } from "../core/run-store.js";
 import type { SQLiteDatabase } from "./sqlite.js";
 
@@ -13,17 +24,55 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
         PRIMARY KEY (run_id, approval_id)
       )
     `);
+    this.ensureCreatedAtIndex();
+  }
+
+  private ensureCreatedAtIndex(): void {
+    const columns = this.database.query<{ name: string }>(
+      "PRAGMA table_info(agentkit_agent_approvals)",
+    ).all();
+    if (!columns.some(({ name }) => name === "created_at")) {
+      this.database.run("ALTER TABLE agentkit_agent_approvals ADD COLUMN created_at INTEGER");
+      this.backfillCreatedAt();
+    }
+    this.database.run(`
+      CREATE INDEX IF NOT EXISTS agentkit_agent_approvals_order
+      ON agentkit_agent_approvals (created_at, run_id, approval_id)
+    `);
+  }
+
+  private backfillCreatedAt(): void {
+    const rows = this.database.query<{ run_id: string; approval_id: string; request_json: string }>(`
+      SELECT run_id, approval_id, request_json
+      FROM agentkit_agent_approvals
+      WHERE created_at IS NULL
+    `).all();
+    const update = this.database.query<never>(`
+      UPDATE agentkit_agent_approvals
+      SET created_at = ?
+      WHERE run_id = ? AND approval_id = ?
+    `);
+    for (const row of rows) {
+      const request = JSON.parse(row.request_json) as Partial<AgentApprovalRequest>;
+      const createdAt = typeof request.createdAt === "number" ? request.createdAt : 0;
+      update.run(createdAt, row.run_id, row.approval_id);
+    }
   }
 
   async save(request: AgentApprovalRequest): Promise<void> {
     assertRunId(request?.runId);
     assertApprovalId(request.approvalId);
     assertToolCallId(request.toolCallId);
+    if (typeof request.createdAt !== "number" || !Number.isFinite(request.createdAt)) {
+      throw new TypeError("An approval request requires a numeric createdAt.");
+    }
     this.database.query<never>(`
-      INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json)
-      VALUES (?, ?, ?)
-      ON CONFLICT (run_id, approval_id) DO UPDATE SET request_json = excluded.request_json
-    `).run(request.runId, request.approvalId, JSON.stringify(request));
+      INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json, created_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT (run_id, approval_id) DO UPDATE SET
+        request_json = excluded.request_json,
+        created_at = excluded.created_at
+    `).run(request.runId, request.approvalId, JSON.stringify(request), request.createdAt);
     return Promise.resolve();
   }
 
@@ -45,6 +94,43 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
       ORDER BY rowid
     `).all();
     return Promise.resolve(rows.map((row) => JSON.parse(row.request_json) as AgentApprovalRequest));
+  }
+
+  async listPage(query: AgentApprovalPageQuery): Promise<AgentApprovalPage> {
+    assertPageQuery(query);
+    const cursor = query.cursor === undefined ? undefined : decodeApprovalCursor(query.cursor);
+    const pendingOnly = query.pendingOnly !== false;
+
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (pendingOnly) {
+      conditions.push("json_extract(request_json, '$.decision') IS NULL");
+    }
+    if (cursor !== undefined) {
+      conditions.push(
+        "(created_at > ? OR (created_at = ? AND (run_id > ? OR (run_id = ? AND approval_id > ?))))",
+      );
+      params.push(cursor.createdAt, cursor.createdAt, cursor.runId, cursor.runId, cursor.approvalId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(query.limit + 1);
+
+    const rows = this.database.query<{ request_json: string }>(`
+      SELECT request_json
+      FROM agentkit_agent_approvals
+      ${where}
+      ORDER BY created_at, run_id, approval_id
+      LIMIT ?
+    `).all(...params);
+
+    const requests = rows.map((row) => JSON.parse(row.request_json) as AgentApprovalRequest);
+    const hasMore = requests.length > query.limit;
+    const page = hasMore ? requests.slice(0, query.limit) : requests;
+    const last = page.at(-1);
+    return Promise.resolve({
+      requests: page,
+      ...(hasMore && last !== undefined ? { nextCursor: encodeApprovalCursor(last) } : {}),
+    });
   }
 
   async delete(runId: string): Promise<void> {

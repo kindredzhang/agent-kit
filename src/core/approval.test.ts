@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Agent, AgentApprovalQueue, InMemoryRunStore, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../index.js";
-import type { AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
+import { Agent, AgentApprovalQueue, InMemoryApprovalStore, InMemoryRunStore, SQLiteApprovalStore, SQLiteRunStore, defineTool } from "../index.js";
+import type { AgentApprovalRequest, AgentEvent, LanguageModel, ModelStreamEvent } from "../index.js";
 import { z } from "zod";
 
 function writeModel(): LanguageModel {
@@ -56,6 +56,18 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   const collected: AgentEvent[] = [];
   for await (const event of events) collected.push(event);
   return collected;
+}
+
+function record(runId: string, approvalId: string): AgentApprovalRequest {
+  return {
+    runId,
+    turn: 1,
+    toolCallId: "call_1",
+    approvalId,
+    tool: { name: "write", description: "Write a record." },
+    input: { value: 1 },
+    createdAt: 1_700_000_000_000,
+  };
 }
 
 test("observes a paused run and records its approval request", async () => {
@@ -170,6 +182,66 @@ test("keeps createdAt stable when a request is decided", async () => {
   });
 
   expect(decided.createdAt).toBe(1_700_000_000_000);
+});
+
+test("pages through pending requests with a stable cursor", async () => {
+  const store = new InMemoryApprovalStore();
+  const queue = new AgentApprovalQueue({ store });
+  for (const [index, runId] of ["run-1", "run-2", "run-3", "run-4", "run-5"].entries()) {
+    await store.save(record(`run-${index + 1}`, `approval-${index + 1}`));
+  }
+
+  const first = await queue.listPage({ limit: 2 });
+  expect(first.requests.map(({ runId }) => runId)).toEqual(["run-1", "run-2"]);
+  expect(first.nextCursor).toBeDefined();
+
+  const second = await queue.listPage({ limit: 2, cursor: first.nextCursor });
+  expect(second.requests.map(({ runId }) => runId)).toEqual(["run-3", "run-4"]);
+  expect(second.nextCursor).toBeDefined();
+
+  const third = await queue.listPage({ limit: 2, cursor: second.nextCursor });
+  expect(third.requests.map(({ runId }) => runId)).toEqual(["run-5"]);
+  expect(third.nextCursor).toBeUndefined();
+});
+
+test("pages through requests recorded in the same millisecond", async () => {
+  const store = new InMemoryApprovalStore();
+  const queue = new AgentApprovalQueue({ store });
+  for (const index of [1, 2, 3]) await store.save(record(`run-${index}`, `approval-${index}`));
+
+  const seen: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await queue.listPage({ limit: 1, ...(cursor ? { cursor } : {}) });
+    seen.push(...page.requests.map(({ runId }) => runId));
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  expect(seen).toEqual(["run-1", "run-2", "run-3"]);
+});
+
+test("applies pendingOnly before paging", async () => {
+  const store = new InMemoryApprovalStore();
+  const queue = new AgentApprovalQueue({ store });
+  for (const index of [1, 2, 3]) await store.save(record(`run-${index}`, `approval-${index}`));
+  await store.save({ ...record("run-2", "approval-2"), decision: "approved" });
+
+  const pending = await queue.listPage({ limit: 2 });
+  expect(pending.requests.map(({ runId }) => runId)).toEqual(["run-1", "run-3"]);
+
+  const all = await queue.listPage({ limit: 2, pendingOnly: false });
+  expect(all.requests.map(({ runId }) => runId)).toEqual(["run-1", "run-2"]);
+});
+
+test("rejects a cursor that is not one this queue produced", async () => {
+  const queue = new AgentApprovalQueue();
+  expect(queue.listPage({ limit: 1, cursor: "not-a-cursor" })).rejects.toThrow(TypeError);
+});
+
+test("rejects a page limit that is not a positive integer", async () => {
+  const queue = new AgentApprovalQueue();
+  expect(queue.listPage({ limit: 0 })).rejects.toThrow(RangeError);
+  expect(queue.listPage({ limit: 1.5 })).rejects.toThrow(RangeError);
 });
 
 test("lists decided requests only when asked", async () => {

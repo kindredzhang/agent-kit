@@ -68,3 +68,65 @@ test("rejects an empty run id and tool call id", async () => {
   expect(store.load("")).rejects.toThrow("runId");
   expect(store.delete("")).rejects.toThrow("runId");
 });
+
+test("pages in creation order and stops at the last page", async () => {
+  const store = new SQLiteApprovalStore(new Database(":memory:"));
+  for (const [index, runId] of ["run-1", "run-2", "run-3", "run-4", "run-5"].entries()) {
+    await store.save({ ...approvalRequest(runId, "call_1"), createdAt: 1_000 + index });
+  }
+
+  const first = await store.listPage({ limit: 2 });
+  expect(first.requests.map(({ runId }) => runId)).toEqual(["run-1", "run-2"]);
+
+  const second = await store.listPage({ limit: 2, cursor: first.nextCursor });
+  expect(second.requests.map(({ runId }) => runId)).toEqual(["run-3", "run-4"]);
+
+  const third = await store.listPage({ limit: 2, cursor: second.nextCursor });
+  expect(third.requests.map(({ runId }) => runId)).toEqual(["run-5"]);
+  expect(third.nextCursor).toBeUndefined();
+});
+
+test("breaks ties on identical creation times", async () => {
+  const store = new SQLiteApprovalStore(new Database(":memory:"));
+  for (const runId of ["run-b", "run-a", "run-c"]) {
+    await store.save({ ...approvalRequest(runId, "call_1"), createdAt: 1_000 });
+  }
+
+  const first = await store.listPage({ limit: 2 });
+  expect(first.requests.map(({ runId }) => runId)).toEqual(["run-a", "run-b"]);
+
+  const second = await store.listPage({ limit: 2, cursor: first.nextCursor });
+  expect(second.requests.map(({ runId }) => runId)).toEqual(["run-c"]);
+});
+
+test("pages only pending requests by default and includes decided ones when asked", async () => {
+  const store = new SQLiteApprovalStore(new Database(":memory:"));
+  for (const [index, runId] of ["run-1", "run-2", "run-3"].entries()) {
+    await store.save({ ...approvalRequest(runId, "call_1"), createdAt: 1_000 + index });
+  }
+  await store.save({ ...approvalRequest("run-2", "call_1"), createdAt: 1_001, decision: "approved" });
+
+  expect((await store.listPage({ limit: 10 })).requests.map(({ runId }) => runId)).toEqual(["run-1", "run-3"]);
+  expect((await store.listPage({ limit: 10, pendingOnly: false })).requests.map(({ runId }) => runId))
+    .toEqual(["run-1", "run-2", "run-3"]);
+});
+
+test("backfills createdAt when the table predates the column", async () => {
+  const database = new Database(":memory:");
+  database.run(`
+    CREATE TABLE agentkit_agent_approvals (
+      run_id TEXT NOT NULL,
+      approval_id TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      PRIMARY KEY (run_id, approval_id)
+    )
+  `);
+  database.query(`
+    INSERT INTO agentkit_agent_approvals (run_id, approval_id, request_json)
+    VALUES (?, ?, ?)
+  `).run("run-1", "approval-1", JSON.stringify({ ...approvalRequest("run-1", "call_1"), createdAt: 1_500 }));
+
+  const store = new SQLiteApprovalStore(database);
+  const page = await store.listPage({ limit: 10 });
+  expect(page.requests).toEqual([{ ...approvalRequest("run-1", "call_1"), createdAt: 1_500 }]);
+});

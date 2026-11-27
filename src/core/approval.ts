@@ -9,6 +9,61 @@ export type AgentApprovalDecision = "approved" | "rejected";
 export type AgentPausedEvent = Extract<AgentEvent, { type: "agent.paused" }>;
 export type AgentApprovalRequestedEvent = Extract<AgentEvent, { type: "tool.approval.requested" }>;
 
+interface ApprovalCursor {
+  createdAt: number;
+  runId: string;
+  approvalId: string;
+}
+
+export function compareApprovalOrder(left: AgentApprovalRequest, right: AgentApprovalRequest): number {
+  if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
+  if (left.runId !== right.runId) return left.runId < right.runId ? -1 : 1;
+  if (left.approvalId !== right.approvalId) return left.approvalId < right.approvalId ? -1 : 1;
+  return 0;
+}
+
+export function encodeApprovalCursor(request: AgentApprovalRequest): string {
+  const cursor: ApprovalCursor = {
+    createdAt: request.createdAt,
+    runId: request.runId,
+    approvalId: request.approvalId,
+  };
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodeApprovalCursor(cursor: string): ApprovalCursor {
+  if (typeof cursor !== "string" || cursor.length === 0) {
+    throw new TypeError("An approval page cursor must be a non-empty string.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new TypeError("The approval page cursor is not one this store produced.");
+  }
+  if (
+    !parsed || typeof parsed !== "object" ||
+    typeof (parsed as ApprovalCursor).createdAt !== "number" ||
+    typeof (parsed as ApprovalCursor).runId !== "string" ||
+    typeof (parsed as ApprovalCursor).approvalId !== "string"
+  ) {
+    throw new TypeError("The approval page cursor is not one this store produced.");
+  }
+  return parsed as ApprovalCursor;
+}
+
+export function isAfterApprovalCursor(request: AgentApprovalRequest, cursor: ApprovalCursor): boolean {
+  if (request.createdAt !== cursor.createdAt) return request.createdAt > cursor.createdAt;
+  if (request.runId !== cursor.runId) return request.runId > cursor.runId;
+  return request.approvalId > cursor.approvalId;
+}
+
+export function assertPageQuery(query: AgentApprovalPageQuery): void {
+  if (!Number.isSafeInteger(query?.limit) || query.limit < 1) {
+    throw new RangeError("An approval page limit must be a positive integer.");
+  }
+}
+
 export interface AgentApprovalRequest {
   runId: string;
   turn: number;
@@ -20,10 +75,22 @@ export interface AgentApprovalRequest {
   decision?: AgentApprovalDecision;
 }
 
+export interface AgentApprovalPage {
+  requests: AgentApprovalRequest[];
+  nextCursor?: string;
+}
+
+export interface AgentApprovalPageQuery {
+  limit: number;
+  cursor?: string;
+  pendingOnly?: boolean;
+}
+
 export interface AgentApprovalStore {
   save(request: AgentApprovalRequest): Promise<void>;
   load(runId: string): Promise<readonly AgentApprovalRequest[]>;
   list(): Promise<readonly AgentApprovalRequest[]>;
+  listPage(query: AgentApprovalPageQuery): Promise<AgentApprovalPage>;
   delete(runId: string): Promise<void>;
 }
 
@@ -43,6 +110,25 @@ export class InMemoryApprovalStore implements AgentApprovalStore {
 
   async list(): Promise<readonly AgentApprovalRequest[]> {
     return Promise.resolve(this.select(() => true));
+  }
+
+  async listPage(query: AgentApprovalPageQuery): Promise<AgentApprovalPage> {
+    assertPageQuery(query);
+    const cursor = query.cursor === undefined ? undefined : decodeApprovalCursor(query.cursor);
+    const pendingOnly = query.pendingOnly !== false;
+
+    const ordered = this.select((request) => !pendingOnly || request.decision === undefined)
+      .sort(compareApprovalOrder)
+      .filter((request) => cursor === undefined || isAfterApprovalCursor(request, cursor));
+
+    const requests = ordered.slice(0, query.limit);
+    const last = requests.at(-1);
+    return Promise.resolve({
+      requests,
+      ...(ordered.length > query.limit && last !== undefined
+        ? { nextCursor: encodeApprovalCursor(last) }
+        : {}),
+    });
   }
 
   async delete(runId: string): Promise<void> {
@@ -148,6 +234,15 @@ export class AgentApprovalQueue {
       ? requests
       : requests.filter((request) => request.decision === undefined);
     return selected.map((request) => structuredClone(request));
+  }
+
+  async listPage(query: AgentApprovalPageQuery): Promise<AgentApprovalPage> {
+    assertPageQuery(query);
+    const page = await this.store.listPage(query);
+    return {
+      requests: page.requests.map((request) => structuredClone(request)),
+      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+    };
   }
 
   async decisionFor(
