@@ -111,6 +111,17 @@ test("pages only pending requests by default and includes decided ones when aske
     .toEqual(["run-1", "run-2", "run-3"]);
 });
 
+test("prunes only decided requests older than the cutoff", async () => {
+  const store = new SQLiteApprovalStore(new Database(":memory:"));
+  await store.save({ ...approvalRequest("run-old-decided", "call_1"), createdAt: 1_000, decision: "approved" });
+  await store.save({ ...approvalRequest("run-old-pending", "call_2"), createdAt: 1_000 });
+  await store.save({ ...approvalRequest("run-new-decided", "call_3"), createdAt: 9_000, decision: "rejected" });
+
+  expect(await store.prune({ decidedBefore: 5_000 })).toBe(1);
+  expect((await store.list()).map(({ runId }) => runId)).toEqual(["run-old-pending", "run-new-decided"]);
+  expect(await store.prune({ decidedBefore: 5_000 })).toBe(0);
+});
+
 test("backfills createdAt when the table predates the column", async () => {
   const database = new Database(":memory:");
   database.run(`

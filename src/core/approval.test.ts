@@ -244,6 +244,35 @@ test("rejects a page limit that is not a positive integer", async () => {
   expect(queue.listPage({ limit: 1.5 })).rejects.toThrow(RangeError);
 });
 
+test("prunes decided requests older than a cutoff and keeps pending ones", async () => {
+  const store = new InMemoryApprovalStore();
+  const queue = new AgentApprovalQueue({ store });
+
+  await store.save({ ...record("run-old-decided", "approval-1"), createdAt: 1_000, decision: "approved" });
+  await store.save({ ...record("run-old-pending", "approval-2"), createdAt: 1_000 });
+  await store.save({ ...record("run-new-decided", "approval-3"), createdAt: 9_000, decision: "rejected" });
+
+  const removed = await queue.prune({ decidedBefore: 5_000 });
+  expect(removed).toBe(1);
+  expect((await queue.list({ pendingOnly: false })).map(({ runId }) => runId))
+    .toEqual(["run-old-pending", "run-new-decided"]);
+});
+
+test("prunes nothing when every decided request is newer than the cutoff", async () => {
+  const store = new InMemoryApprovalStore();
+  const queue = new AgentApprovalQueue({ store });
+  await store.save({ ...record("run-1", "approval-1"), createdAt: 9_000, decision: "approved" });
+
+  expect(await queue.prune({ decidedBefore: 5_000 })).toBe(0);
+  expect(await queue.list({ pendingOnly: false })).toHaveLength(1);
+});
+
+test("rejects a prune cutoff that is not a finite number", async () => {
+  const queue = new AgentApprovalQueue();
+  expect(queue.prune({ decidedBefore: Number.NaN })).rejects.toThrow(TypeError);
+  expect(queue.prune({ decidedBefore: "soon" as unknown as number })).rejects.toThrow(TypeError);
+});
+
 test("lists decided requests only when asked", async () => {
   const queue = new AgentApprovalQueue();
   const agent = new Agent({ model: writeModel(), tools: [writeTool([])], approvalMode: "pause" });

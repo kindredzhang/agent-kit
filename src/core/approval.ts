@@ -91,7 +91,14 @@ export interface AgentApprovalStore {
   load(runId: string): Promise<readonly AgentApprovalRequest[]>;
   list(): Promise<readonly AgentApprovalRequest[]>;
   listPage(query: AgentApprovalPageQuery): Promise<AgentApprovalPage>;
+  prune(input: { decidedBefore: number }): Promise<number>;
   delete(runId: string): Promise<void>;
+}
+
+export function assertPruneCutoff(input: { decidedBefore: number }): void {
+  if (typeof input?.decidedBefore !== "number" || !Number.isFinite(input.decidedBefore)) {
+    throw new TypeError("A prune cutoff requires a finite decidedBefore timestamp.");
+  }
 }
 
 export class InMemoryApprovalStore implements AgentApprovalStore {
@@ -129,6 +136,18 @@ export class InMemoryApprovalStore implements AgentApprovalStore {
         ? { nextCursor: encodeApprovalCursor(last) }
         : {}),
     });
+  }
+
+  async prune(input: { decidedBefore: number }): Promise<number> {
+    assertPruneCutoff(input);
+    let removed = 0;
+    for (const [requestKey, request] of this.requests) {
+      if (request.decision !== undefined && request.createdAt < input.decidedBefore) {
+        this.requests.delete(requestKey);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
   }
 
   async delete(runId: string): Promise<void> {
@@ -288,6 +307,11 @@ export class AgentApprovalQueue {
     assertRunId(runId);
     this.requested.delete(runId);
     await this.store.delete(runId);
+  }
+
+  async prune(input: { decidedBefore: number }): Promise<number> {
+    assertPruneCutoff(input);
+    return this.store.prune(input);
   }
 
   async *resume(

@@ -1,6 +1,7 @@
 import {
   assertApprovalId,
   assertPageQuery,
+  assertPruneCutoff,
   assertToolCallId,
   decodeApprovalCursor,
   encodeApprovalCursor,
@@ -131,6 +132,21 @@ export class SQLiteApprovalStore implements AgentApprovalStore {
       requests: page,
       ...(hasMore && last !== undefined ? { nextCursor: encodeApprovalCursor(last) } : {}),
     });
+  }
+
+  async prune(input: { decidedBefore: number }): Promise<number> {
+    assertPruneCutoff(input);
+    let removed = 0;
+    this.database.transaction((cutoff: number) => {
+      this.database.query<never>(`
+        DELETE FROM agentkit_agent_approvals
+        WHERE created_at < ?
+          AND json_extract(request_json, '$.decision') IS NOT NULL
+      `).run(cutoff);
+      const counted = this.database.query<{ removed: number }>("SELECT changes() AS removed").get();
+      removed = counted?.removed ?? 0;
+    })(input.decidedBefore);
+    return Promise.resolve(removed);
   }
 
   async delete(runId: string): Promise<void> {
